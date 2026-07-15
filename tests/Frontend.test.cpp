@@ -21,7 +21,6 @@ LUAU_FASTFLAG(DebugLuauFreezeArena)
 LUAU_FASTFLAG(DebugLuauMagicTypes)
 LUAU_FASTFLAG(LuauExportValueSyntax)
 LUAU_FASTFLAG(LuauExportValueTypecheck)
-LUAU_FASTFLAG(LuauDontBindOptionalGenericToNil)
 LUAU_FASTFLAG(LuauSubtypingMissingPropertiesAsNil)
 LUAU_FASTFLAG(LuauBidirectionalInferenceSimplifyTables)
 
@@ -1923,7 +1922,6 @@ TEST_CASE_FIXTURE(FrontendFixture, "generic_P_widening_with_cross_module_recursi
     DOES_NOT_PASS_OLD_SOLVER_GUARD();
 
     ScopedFastFlag sffs[] = {
-        {FFlag::LuauDontBindOptionalGenericToNil, true},
         {FFlag::LuauSubtypingMissingPropertiesAsNil, true},
         {FFlag::LuauBidirectionalInferenceSimplifyTables, true},
     };

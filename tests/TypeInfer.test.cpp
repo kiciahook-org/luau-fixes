@@ -32,7 +32,6 @@ LUAU_FASTFLAG(LuauInstantiationUsesPolarity)
 LUAU_FASTFLAG(LuauCollapseDirectBoundCycles)
 LUAU_FASTFLAG(LuauSubtypingMissingPropertiesAsNil)
 LUAU_FASTFLAG(LuauImproveUniqueTableWidthSubtyping)
-LUAU_FASTFLAG(LuauDontBindOptionalGenericToNil)
 LUAU_FASTFLAG(LuauBidirectionalInferenceSimplifyTables)
 
 using namespace Luau;
@@ -3008,7 +3007,6 @@ TEST_CASE_FIXTURE(Fixture, "generic_P_inference_with_optional_param_does_not_lea
 {
     ScopedFastFlag sffs[] = {
         {FFlag::DebugLuauForceOldSolver, false},
-        {FFlag::LuauDontBindOptionalGenericToNil, true},
     };
 
     // Width subtyping: passing a table that lacks an optional field to a component
@@ -3031,7 +3029,6 @@ TEST_CASE_FIXTURE(Fixture, "generic_P_with_intersection_props_and_partial_table"
     DOES_NOT_PASS_OLD_SOLVER_GUARD();
 
     ScopedFastFlag sffs[] = {
-        {FFlag::LuauDontBindOptionalGenericToNil, true},
         {FFlag::LuauSubtypingMissingPropertiesAsNil, true},
         {FFlag::LuauBidirectionalInferenceSimplifyTables, true},
     };
@@ -3061,7 +3058,6 @@ TEST_CASE_FIXTURE(Fixture, "generic_P_widening_with_recursive_optional_field")
     DOES_NOT_PASS_OLD_SOLVER_GUARD();
 
     ScopedFastFlag sffs[] = {
-        {FFlag::LuauDontBindOptionalGenericToNil, true},
         {FFlag::LuauSubtypingMissingPropertiesAsNil, true},
         {FFlag::LuauBidirectionalInferenceSimplifyTables, true},
     };

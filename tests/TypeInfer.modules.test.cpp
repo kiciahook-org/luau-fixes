@@ -1297,4 +1297,56 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "non_exported_class")
     CHECK(UnknownSymbol::Context::Type == err->context);
 }
 
+TEST_CASE_FIXTURE(BuiltinsFixture, "infer_generic_receiver_through_matching_optional_union_components")
+{
+    ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
+
+    fileResolver.source["game/Container"] = R"(
+        --!strict
+        local Container = {}
+        Container.__index = Container
+
+        type ContainerData<T> = {
+            accepts: (T) -> boolean,
+            value: T?,
+        }
+
+        export type Container<T> = setmetatable<ContainerData<T>, typeof(Container)>
+
+        function Container.new<T>(accepts: (T) -> boolean): Container<T>
+            return setmetatable({
+                accepts = accepts,
+                value = nil,
+            }, Container)
+        end
+
+        function Container.clear<T>(self: Container<T>)
+            self.value = nil
+        end
+
+        function Container.get<T>(self: Container<T>): T?
+            return self.value
+        end
+
+        return Container
+    )";
+
+    fileResolver.source["game/Main"] = R"(
+        --!strict
+        local Container = require(game.Container)
+        type StringContainer = Container.Container<string>
+
+        local container: StringContainer = Container.new(function(value: string): boolean
+            return value ~= ""
+        end)
+
+        container:clear()
+        local value = container:get()
+    )";
+
+    CheckResult result = getFrontend().check("game/Main");
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK_EQ("string?", toString(requireType("game/Main", "value")));
+}
+
 TEST_SUITE_END();
