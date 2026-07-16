@@ -2195,6 +2195,8 @@ bool ConstraintSolver::tryDispatchHasIndexer(
             bind(constraint, resultType, tbl->indexer->indexResultType);
             return true;
         }
+        else if (tbl && tbl->state == TableState::Sealed)
+            return tryDispatchHasIndexer(recursionDepth, constraint, ft->upperBound, indexType, resultType, seen);
         else if (auto mt = get<MetatableType>(follow(ft->upperBound)))
             return tryDispatchHasIndexer(recursionDepth, constraint, mt->table, indexType, resultType, seen);
 
@@ -2232,6 +2234,66 @@ bool ConstraintSolver::tryDispatchHasIndexer(
             unify(constraint, indexType, indexer->indexType);
             bind(constraint, resultType, indexer->indexResultType);
             return true;
+        }
+
+        if (tt->state == TableState::Sealed)
+        {
+            std::optional<TypeId> commonResult;
+            UnionBuilder resultUnion{arena, builtinTypes};
+            bool hasDifferingResults = false;
+
+            auto addPropertyResult = [&](TypeId keyType)
+            {
+                const StringSingleton* key = get<StringSingleton>(get<SingletonType>(follow(keyType)));
+                if (!key)
+                    return false;
+
+                auto prop = tt->props.find(key->value);
+                if (prop == tt->props.end() || !prop->second.readTy)
+                    return false;
+
+                TypeId readType = *prop->second.readTy;
+                if (!commonResult)
+                    commonResult = readType;
+                else if (readType != *commonResult)
+                {
+                    if (!hasDifferingResults)
+                    {
+                        resultUnion.add(*commonResult);
+                        hasDifferingResults = true;
+                    }
+
+                    resultUnion.add(readType);
+                }
+
+                return true;
+            };
+
+            TypeId knownIndexType = indexType;
+            if (auto freeIndexType = get<FreeType>(knownIndexType))
+                knownIndexType = follow(freeIndexType->upperBound);
+
+            bool validKeys = true;
+            if (auto keys = get<UnionType>(knownIndexType))
+            {
+                for (TypeId keyType : keys)
+                {
+                    if (!addPropertyResult(keyType))
+                    {
+                        validKeys = false;
+                        break;
+                    }
+                }
+            }
+            else
+                validKeys = addPropertyResult(knownIndexType);
+
+            if (validKeys && commonResult)
+            {
+                TypeId readType = hasDifferingResults ? resultUnion.build() : *commonResult;
+                bind(constraint, resultType, readType);
+                return true;
+            }
         }
 
         if (tt->state == TableState::Unsealed)

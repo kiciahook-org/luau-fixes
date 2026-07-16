@@ -7312,4 +7312,109 @@ TEST_CASE_FIXTURE(Fixture, "test_indexing_into_unsealed_table")
     CHECK_EQ("{ [string]: number }", toString(requireType("tbl"), {/* exhaustive */ true}));
 }
 
+TEST_CASE_FIXTURE(Fixture, "sealed_table_access_with_known_singleton_key_union")
+{
+    ScopedFastFlag _{FFlag::DebugLuauForceOldSolver, false};
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        local record: { first: boolean, second: boolean } = {
+            first = true,
+            second = false,
+        }
+        local key: "first" | "second"
+        local result = record[key]
+    )"));
+
+    CHECK_EQ("boolean", toString(requireType("result")));
+    CHECK_EQ("{ first: boolean, second: boolean }", toString(requireType("record"), {/* exhaustive */ true}));
+}
+
+TEST_CASE_FIXTURE(Fixture, "sealed_table_access_unions_known_property_types")
+{
+    ScopedFastFlag _{FFlag::DebugLuauForceOldSolver, false};
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        local record: { first: boolean, second: number } = {
+            first = true,
+            second = 42,
+        }
+        local key: "first" | "second"
+        local result = record[key]
+    )"));
+
+    CHECK_EQ("boolean | number", toString(requireType("result")));
+}
+
+TEST_CASE_FIXTURE(Fixture, "sealed_table_access_rejects_singleton_key_union_with_missing_property")
+{
+    ScopedFastFlag _{FFlag::DebugLuauForceOldSolver, false};
+
+    CheckResult result = check(R"(
+        local record: { first: boolean, second: boolean } = {
+            first = true,
+            second = false,
+        }
+        local key: "first" | "missing"
+        local value = record[key]
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "sealed_table_access_rejects_mixed_non_singleton_key_union")
+{
+    ScopedFastFlag _{FFlag::DebugLuauForceOldSolver, false};
+
+    CheckResult result = check(R"(
+        local record: { first: boolean, second: boolean } = {
+            first = true,
+            second = false,
+        }
+        local key: "first" | number
+        local value = record[key]
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "metatable_wrapped_sealed_table_access_with_known_singleton_key_union")
+{
+    ScopedFastFlag _{FFlag::DebugLuauForceOldSolver, false};
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        local record = setmetatable({
+            first = true,
+            second = false,
+        } :: { first: boolean, second: boolean }, {})
+        local key: "first" | "second"
+        local result = record[key]
+    )"));
+
+    CHECK_EQ("boolean", toString(requireType("result")));
+}
+
+TEST_CASE_FIXTURE(Fixture, "sealed_table_access_canonicalizes_known_property_result_union")
+{
+    ScopedFastFlag _{FFlag::DebugLuauForceOldSolver, false};
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        local optionalRecord: { first: number?, second: number } = {
+            first = nil,
+            second = 42,
+        }
+        local optionalKey: "first" | "second"
+        local optionalResult = optionalRecord[optionalKey]
+
+        local unknownRecord: { first: unknown, second: number } = {
+            first = nil,
+            second = 42,
+        }
+        local unknownKey: "first" | "second"
+        local unknownResult = unknownRecord[unknownKey]
+    )"));
+
+    CHECK_EQ("number?", toString(requireType("optionalResult")));
+    CHECK_EQ("unknown", toString(requireType("unknownResult")));
+}
+
 TEST_SUITE_END();

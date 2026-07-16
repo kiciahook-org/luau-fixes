@@ -1097,8 +1097,10 @@ void TypeChecker2::visit(AstStatForIn* forInStatement)
     {
         reportError(OptionalValueAccess{iteratorTy}, forInStatement->values.data[0]->location);
     }
-    else if (std::optional<TypeId> iterMmTy =
-                 findMetatableEntry(builtinTypes, module->errors, iteratorTy, "__iter", forInStatement->values.data[0]->location))
+    else if (
+        std::optional<TypeId> iterMmTy =
+            findMetatableEntry(builtinTypes, module->errors, iteratorTy, "__iter", forInStatement->values.data[0]->location)
+    )
     {
         Instantiation instantiation{TxnLog::empty(), &arena, builtinTypes, TypeLevel{}, scope};
 
@@ -1917,6 +1919,42 @@ void TypeChecker2::visit(AstExprIndexName* indexName, ValueContext context)
     visitExprName(indexName->expr, indexName->location, indexName->index.value, context, builtinTypes->stringType);
 }
 
+static bool hasKnownReadableProperties(TypeId subjectType, TypeId indexType)
+{
+    subjectType = follow(subjectType);
+
+    const TableType* table = get<TableType>(subjectType);
+    if (!table || table->state != TableState::Sealed)
+        return false;
+
+    indexType = follow(indexType);
+    if (auto freeIndexType = get<FreeType>(indexType))
+        indexType = follow(freeIndexType->upperBound);
+
+    auto isReadableProperty = [&](TypeId keyType)
+    {
+        const StringSingleton* key = get<StringSingleton>(get<SingletonType>(follow(keyType)));
+        if (!key)
+            return false;
+
+        auto prop = table->props.find(key->value);
+        return prop != table->props.end() && prop->second.readTy.has_value();
+    };
+
+    if (auto keys = get<UnionType>(indexType))
+    {
+        for (TypeId keyType : keys)
+        {
+            if (!isReadableProperty(keyType))
+                return false;
+        }
+
+        return true;
+    }
+
+    return isReadableProperty(indexType);
+}
+
 void TypeChecker2::indexExprMetatableHelper(AstExprIndexExpr* indexExpr, const MetatableType* metaTable, TypeId exprType, TypeId indexType)
 {
     if (auto tt = get<TableType>(follow(metaTable->table)); tt && tt->indexer)
@@ -1960,11 +1998,14 @@ void TypeChecker2::visit(AstExprIndexExpr* indexExpr, ValueContext context)
             if (FFlag::LuauReadOnlyIndexers && context == ValueContext::LValue && tt->indexer->isReadOnly)
                 reportError(PropertyAccessViolation{exprType, "indexer", PropertyAccessViolation::CannotWrite}, indexExpr->location);
         }
-        else
+        else if (context != ValueContext::RValue || !hasKnownReadableProperties(exprType, indexType))
             reportError(CannotExtendTable{exprType, CannotExtendTable::Indexer, "indexer??"}, indexExpr->location);
     }
     else if (auto mt = get<MetatableType>(exprType))
     {
+        if (context == ValueContext::RValue && hasKnownReadableProperties(mt->table, indexType))
+            return;
+
         return indexExprMetatableHelper(indexExpr, mt, exprType, indexType);
     }
     else if (auto cls = get<ExternType>(exprType))
@@ -2268,8 +2309,9 @@ static bool isOkToCompare(
         return true;
 
     // Comparison with never is always ok.
-    else if (NormalizationResult::True != normalizer.isInhabited(normLeft.get()) ||
-             NormalizationResult::True != normalizer.isInhabited(normRight.get()))
+    else if (
+        NormalizationResult::True != normalizer.isInhabited(normLeft.get()) || NormalizationResult::True != normalizer.isInhabited(normRight.get())
+    )
         return true;
 
     // Comparisons between different string singleton typeArguments is allowed even
