@@ -43,7 +43,6 @@ LUAU_FASTFLAGVARIABLE(DebugLuauAssertOnForcedConstraint)
 LUAU_FASTFLAGVARIABLE(DebugLuauLogSolver)
 LUAU_FASTFLAGVARIABLE(DebugLuauLogBindings)
 LUAU_FASTFLAGVARIABLE(LuauRefineNilFromTableIndexerResultType)
-LUAU_FASTFLAGVARIABLE(LuauFixPropReadsOnMetatableTypes)
 LUAU_FASTFLAGVARIABLE(LuauAlsoInstantiateInferredArguments)
 LUAU_FLAGVERSION(LuauAlsoInstantiateInferredArguments, 2)
 LUAU_FASTFLAG(DebugLuauUserDefinedClasses)
@@ -3705,7 +3704,7 @@ TablePropLookupResult ConstraintSolver::lookupTableProp(
         if (inConditional)
             return {{}, builtinTypes->unknownType};
     }
-    else if (auto mt = get<MetatableType>(subjectType); FFlag::LuauFixPropReadsOnMetatableTypes && mt && context == ValueContext::LValue)
+    else if (auto mt = get<MetatableType>(subjectType); mt && context == ValueContext::LValue)
     {
         // TODO __newindex: CLI-199848
         return lookupTableProp(constraint, mt->table, propName, context, inConditional, suppressSimplification, seen);

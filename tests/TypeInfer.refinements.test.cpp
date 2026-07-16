@@ -12,7 +12,6 @@ LUAU_FASTFLAG(DebugLuauForceOldSolver)
 LUAU_FASTFLAG(DebugLuauAssertOnForcedConstraint)
 LUAU_FASTFLAG(LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
 LUAU_FASTFLAG(LuauIndexingIntoErrorGivesError);
-LUAU_FASTFLAG(LuauFixPropReadsOnMetatableTypes)
 
 using namespace Luau;
 
@@ -3966,7 +3965,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "impossible_property_refinement_of_recursive_
 TEST_CASE_FIXTURE(BuiltinsFixture, "property_refined_metatable_preserves_writable_table_capabilities")
 {
     ScopedFastFlag solverFlag{FFlag::DebugLuauForceOldSolver, false};
-    ScopedFastFlag metatableWriteFlag{FFlag::LuauFixPropReadsOnMetatableTypes, true};
 
     LUAU_REQUIRE_NO_ERRORS(check(R"(
         --!strict
