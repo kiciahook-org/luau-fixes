@@ -3291,6 +3291,147 @@ TEST_CASE_FIXTURE(Fixture, "table_name_index_without_prior_assignment_from_branc
     CHECK_EQ("{  }", toString(requireType("x")));
 }
 
+TEST_CASE_FIXTURE(Fixture, "optional_local_assignment_preserves_the_other_branch_refinement_at_a_join")
+{
+    ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        type Value = { [string]: true? }
+
+        local value: Value? = nil
+        if value == nil then
+            value = {}
+        end
+
+        value.enabled = true
+    )"));
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        type Value = { [string]: true? }
+        type Output = { [string]: Value? }
+
+        local output: Output = {}
+        local value: Value? = nil
+        if value == nil then
+            value = {}
+        end
+
+        output.entry = value
+        value.enabled = true
+    )"));
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        type Value = { [string]: true? }
+
+        local value: Value? = nil
+        local function read()
+            return value
+        end
+
+        if value == nil then
+            value = {}
+        end
+
+        read()
+        value.enabled = true
+    )"));
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        type Value = { [string]: true? }
+
+        local value: Value? = nil
+        if value == nil then
+            value = nil
+            value = {}
+        end
+
+        value.enabled = true
+    )"));
+}
+
+TEST_CASE_FIXTURE(Fixture, "optional_local_join_does_not_hide_later_optional_paths")
+{
+    ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
+
+    CheckResult reassigned = check(R"(
+        type Value = { [string]: true? }
+
+        local value: Value? = nil
+        if value == nil then
+            value = {}
+        end
+
+        value = nil
+        value.enabled = true
+    )");
+    LUAU_REQUIRE_ERROR_COUNT(1, reassigned);
+    CHECK(get<NotATable>(reassigned.errors[0]));
+
+    CheckResult optionalBranch = check(R"(
+        type Value = { [string]: true? }
+
+        local function write(flag: boolean)
+            local value: Value? = nil
+            if flag then
+                value = {}
+            end
+
+            value.enabled = true
+        end
+    )");
+    LUAU_REQUIRE_ERROR_COUNT(1, optionalBranch);
+    CHECK(get<OptionalValueAccess>(optionalBranch.errors[0]));
+
+    CheckResult partialAssignment = check(R"(
+        type Value = { [string]: true? }
+
+        local function write(flag: boolean)
+            local value: Value? = nil
+            if value == nil then
+                if flag then
+                    value = {}
+                end
+            end
+
+            value.enabled = true
+        end
+    )");
+    LUAU_REQUIRE_ERROR_COUNT(1, partialAssignment);
+    CHECK(get<OptionalValueAccess>(partialAssignment.errors[0]));
+
+    CheckResult finalAssignmentIsOptional = check(R"(
+        type Value = { [string]: true? }
+
+        local value: Value? = nil
+        if value == nil then
+            value = {}
+            value = nil
+        end
+
+        value.enabled = true
+    )");
+    LUAU_REQUIRE_ERROR_COUNT(1, finalAssignmentIsOptional);
+    CHECK(get<OptionalValueAccess>(finalAssignmentIsOptional.errors[0]));
+
+    CheckResult callMayWrite = check(R"(
+        type Value = { [string]: true? }
+
+        local value: Value? = nil
+        local function clear()
+            value = nil
+        end
+
+        if value == nil then
+            value = {}
+        end
+
+        clear()
+        value.enabled = true
+    )");
+    LUAU_REQUIRE_ERROR_COUNT(1, callMayWrite);
+    CHECK(get<OptionalValueAccess>(callMayWrite.errors[0]));
+}
+
 TEST_CASE_FIXTURE(Fixture, "cli_120460_table_access_on_phi_node")
 {
     LUAU_REQUIRE_NO_ERRORS(check(R"(
@@ -3772,6 +3913,176 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "impossible_property_refinement_of_recursive_
             end
         end
     )"));
+}
+
+TEST_CASE_FIXTURE(Fixture, "post_if_phi_preserves_the_refined_incoming_discriminated_arm")
+{
+    ScopedFastFlag _{FFlag::DebugLuauForceOldSolver, false};
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        type Build = { ready: false } | { ready: true, value: number }
+        local build: Build = { ready = false }
+
+        if not build.ready then
+            build = { ready = true, value = 1 }
+        end
+
+        return build.value
+    )"));
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        type Build = { ready: false } | { ready: true, value: number }
+        local holder: { build: Build } = { build = { ready = false } }
+        local build = holder.build
+
+        if not build.ready then
+            build = { ready = true, value = 1 }
+            holder.build = build
+        end
+
+        return build.value
+    )"));
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        type Build = { ready: false } | { ready: true, value: number }
+        local build: Build = { ready = false }
+
+        local function isReady()
+            return build.ready
+        end
+
+        if not build.ready then
+            build = { ready = true, value = 1 }
+        end
+
+        isReady()
+        return build.value
+    )"));
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        type Build = { ready: false } | { ready: true, value: number }
+        local build: Build = { ready = false }
+
+        if not build.ready then
+            build = { ready = false }
+            build = { ready = true, value = 1 }
+        end
+
+        return build.value
+    )"));
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        type Build<T> = { ready: true, value: T } | { ready: false }
+
+        local function finish<T>(build: Build<T>, value: T): T
+            if not build.ready then
+                build = { ready = true, value = value }
+            end
+
+            return build.value
+        end
+
+        local function finishAfterStore<T>(build: Build<T>, value: T): T
+            local holder = { build = build }
+
+            if not build.ready then
+                build = { ready = true, value = value }
+            end
+
+            holder.build = build
+            return build.value
+        end
+    )"));
+}
+
+TEST_CASE_FIXTURE(Fixture, "post_if_phi_does_not_preserve_unproven_discriminated_arms")
+{
+    ScopedFastFlag _{FFlag::DebugLuauForceOldSolver, false};
+
+    CheckResult result = check(R"(
+        type Build<T> = { ready: true, value: T } | { ready: false }
+        type ReadyBuild<T> = { ready: true, value: T }
+
+        local function withoutReassignment<T>(build: Build<T>): T
+            if not build.ready then
+            end
+
+            return build.value
+        end
+
+        local function afterUnionWrite<T>(build: Build<T>, ready: ReadyBuild<T>, other: Build<T>): T
+            if not build.ready then
+                build = ready
+            end
+
+            build = other
+            return build.value
+        end
+
+        local function withoutReassignmentOnEveryPath<T>(build: Build<T>, ready: ReadyBuild<T>, condition: boolean): T
+            if not build.ready then
+                if condition then
+                    build = ready
+                end
+            end
+
+            return build.value
+        end
+
+        local function withFinalFalseWrite<T>(build: Build<T>, ready: ReadyBuild<T>): T
+            if not build.ready then
+                build = ready
+                build = { ready = false }
+            end
+
+            return build.value
+        end
+
+        local function withLaterNestedWrite<T>(build: Build<T>, ready: ReadyBuild<T>, condition: boolean): T
+            if not build.ready then
+                build = ready
+                if condition then
+                    build = { ready = false }
+                end
+            end
+
+            return build.value
+        end
+
+        local function afterCapturedWrite(): number
+            local build: Build<number> = { ready = false }
+
+            local function reset()
+                build = { ready = false }
+            end
+
+            if not build.ready then
+                build = { ready = true, value = 1 }
+            end
+
+            reset()
+            return build.value
+        end
+
+        local function throughMutableAlias<T>(build: Build<T>, ready: ReadyBuild<T>): T
+            local alias = build
+
+            if not alias.ready then
+                build = ready
+            end
+
+            return build.value
+        end
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(7, result);
+    CHECK(get<MissingUnionProperty>(result.errors[0]));
+    CHECK(get<MissingUnionProperty>(result.errors[1]));
+    CHECK(get<MissingUnionProperty>(result.errors[2]));
+    CHECK(get<MissingUnionProperty>(result.errors[3]));
+    CHECK(get<MissingUnionProperty>(result.errors[4]));
+    CHECK(get<MissingUnionProperty>(result.errors[5]));
+    CHECK(get<MissingUnionProperty>(result.errors[6]));
 }
 
 TEST_SUITE_END();

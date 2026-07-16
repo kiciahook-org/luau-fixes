@@ -2185,6 +2185,153 @@ ControlFlow ConstraintGenerator::visit(const ScopePtr& scope, AstStatIf* ifState
         else if (thencf == ControlFlow::None && elsecf != ControlFlow::None)
             scope->inheritRefinements(thenScope);
 
+        AstLocal* candidateLocal = nullptr;
+        if (AstExprBinary* binary = ifStatement->condition->as<AstExprBinary>();
+            binary && (binary->op == AstExprBinary::CompareEq || binary->op == AstExprBinary::CompareNe))
+        {
+            if (AstExprLocal* local = binary->left->as<AstExprLocal>(); local && binary->right->is<AstExprConstantNil>())
+                candidateLocal = local->local;
+            else if (AstExprLocal* local = binary->right->as<AstExprLocal>(); local && binary->left->is<AstExprConstantNil>())
+                candidateLocal = local->local;
+        }
+        else
+        {
+            AstExpr* discriminant = ifStatement->condition;
+            if (AstExprUnary* unary = discriminant->as<AstExprUnary>(); unary && unary->op == AstExprUnary::Op::Not)
+                discriminant = unary->expr;
+
+            if (AstExprIndexName* index = discriminant->as<AstExprIndexName>())
+            {
+                if (AstExprLocal* local = index->expr->as<AstExprLocal>())
+                    candidateLocal = local->local;
+            }
+            else if (AstExprIndexExpr* index = discriminant->as<AstExprIndexExpr>(); index && index->index->is<AstExprConstantString>())
+            {
+                if (AstExprLocal* local = index->expr->as<AstExprLocal>())
+                    candidateLocal = local->local;
+            }
+        }
+
+        // If one branch assigns to a local, the post-if phi combines that new definition with the
+        // incoming definition from the other branch. Preserve the other branch's refinement for
+        // that incoming definition; using its declared type would discard what the condition proved.
+        struct LocalWriteFinder : AstVisitor
+        {
+            AstLocal* local;
+            bool found = false;
+
+            explicit LocalWriteFinder(AstLocal* local)
+                : local(local)
+            {
+            }
+
+            bool visit(AstStatAssign* assignment) override
+            {
+                for (AstExpr* target : assignment->vars)
+                {
+                    if (AstExprLocal* targetLocal = target->as<AstExprLocal>(); targetLocal && targetLocal->local == local)
+                        found = true;
+                }
+
+                return !found;
+            }
+
+            bool visit(AstStatCompoundAssign* assignment) override
+            {
+                if (AstExprLocal* targetLocal = assignment->var->as<AstExprLocal>(); targetLocal && targetLocal->local == local)
+                    found = true;
+
+                return !found;
+            }
+
+            bool visit(AstStatFunction* function) override
+            {
+                if (AstExprLocal* targetLocal = function->name->as<AstExprLocal>(); targetLocal && targetLocal->local == local)
+                    found = true;
+
+                return !found;
+            }
+        };
+
+        auto branchWritesLocal = [](AstStat* branch, AstLocal* local)
+        {
+            if (!branch)
+                return false;
+
+            LocalWriteFinder writes{local};
+            branch->visit(&writes);
+            return writes.found;
+        };
+
+        // Select the final unconditional assignment in the branch block. Nested or later writes can
+        // leave a different version at the branch exit, so they conservatively disqualify the join.
+        auto findDominatingTopLevelAssignment = [](AstStat* branch, AstLocal* local) -> AstExprLocal*
+        {
+            AstStatBlock* block = branch ? branch->as<AstStatBlock>() : nullptr;
+            if (!block)
+                return nullptr;
+
+            LocalWriteFinder laterWrites{local};
+            for (size_t i = block->body.size; i-- > 0;)
+            {
+                AstStat* stat = block->body.data[i];
+                if (AstStatAssign* assignment = stat->as<AstStatAssign>())
+                {
+                    AstExprLocal* directAssignment = nullptr;
+                    for (AstExpr* target : assignment->vars)
+                    {
+                        if (AstExprLocal* targetLocal = target->as<AstExprLocal>(); targetLocal && targetLocal->local == local)
+                        {
+                            if (directAssignment)
+                                return nullptr;
+                            directAssignment = targetLocal;
+                        }
+                    }
+
+                    if (directAssignment)
+                        return laterWrites.found ? nullptr : directAssignment;
+                }
+
+                stat->visit(&laterWrites);
+            }
+
+            return nullptr;
+        };
+
+        auto inheritRefinedPhiOperands =
+            [&](const ScopePtr& refinedBranch, const ScopePtr& assignedBranch, AstStat* refinedBranchBody, AstStat* assignedBranchBody)
+        {
+            for (const auto& [def, ty] : refinedBranch->rvalueRefinements)
+            {
+                std::optional<Symbol> symbol = dfg->getSymbolFromDef(def);
+                AstLocal* local = symbol ? symbol->local : nullptr;
+                if (!local || local != candidateLocal || dfg->isWrittenByCapturedLocal(local) || branchWritesLocal(refinedBranchBody, local))
+                    continue;
+
+                AstExprLocal* assignment = findDominatingTopLevelAssignment(assignedBranchBody, local);
+                if (!assignment)
+                    continue;
+
+                DefId assignedDef = dfg->getDef(assignment);
+                std::optional<TypeId> assignedTy = assignedBranch->lookupUnrefinedType(assignedDef);
+                if (!assignedTy)
+                    continue;
+
+                TypeIds* domain = localTypes.find(*assignedTy);
+                if (!domain || domain->size() != 1)
+                    continue;
+
+                scope->rvalueRefinements[def] = ty;
+                scope->rvalueRefinements[assignedDef] = *domain->begin();
+            }
+        };
+
+        if ((thencf | elsecf) == ControlFlow::None)
+        {
+            inheritRefinedPhiOperands(thenScope, elseScope, ifStatement->thenbody, ifStatement->elsebody);
+            inheritRefinedPhiOperands(elseScope, thenScope, ifStatement->elsebody, ifStatement->thenbody);
+        }
+
         if (thencf == ControlFlow::None)
             scope->inheritAssignments(thenScope);
         if (elsecf == ControlFlow::None)
