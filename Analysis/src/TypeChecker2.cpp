@@ -37,6 +37,7 @@ LUAU_FASTFLAG(DebugLuauMagicTypes)
 LUAU_FASTFLAGVARIABLE(LuauCheckFunctionStatementTypes)
 LUAU_FASTFLAGVARIABLE(LuauPropertyModifierMismatchErrors)
 LUAU_FASTFLAG(LuauTweakAccessViolationReporting)
+LUAU_FASTFLAG(LuauFixPropReadsOnMetatableTypes)
 LUAU_FASTFLAG(LuauReadOnlyIndexers)
 LUAU_FASTFLAG(LuauImproveUniqueTableWidthSubtyping)
 LUAU_FASTFLAG(LuauBidirectionalInferenceSimplifyTables)
@@ -3829,6 +3830,12 @@ PropertyType TypeChecker2::hasIndexTypeFromType(
         }
 
         return {NormalizationResult::False, {builtinTypes->unknownType}};
+    }
+    else if (const MetatableType* mt = get<MetatableType>(ty); FFlag::LuauFixPropReadsOnMetatableTypes && mt && context == ValueContext::LValue)
+    {
+        // Property refinements can leave a metatable's table component as an
+        // intersection. Writes still target the original table capability.
+        return hasIndexTypeFromType(mt->table, prop, context, location, seen, astIndexExprType, errors);
     }
     else if (const ExternType* cls = get<ExternType>(ty))
     {

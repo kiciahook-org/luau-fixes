@@ -12,6 +12,7 @@ LUAU_FASTFLAG(DebugLuauForceOldSolver)
 LUAU_FASTFLAG(DebugLuauAssertOnForcedConstraint)
 LUAU_FASTFLAG(LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
 LUAU_FASTFLAG(LuauIndexingIntoErrorGivesError);
+LUAU_FASTFLAG(LuauFixPropReadsOnMetatableTypes)
 
 using namespace Luau;
 
@@ -2094,6 +2095,53 @@ TEST_CASE_FIXTURE(Fixture, "cat_or_dog_through_a_local")
     CHECK_EQ("Cat | Dog", toString(requireTypeAtPosition({10, 28})));
 }
 
+TEST_CASE_FIXTURE(Fixture, "locals_from_unstable_property_sources_refine_without_refining_the_source")
+{
+    ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        --!strict
+
+        type Alive = { rootPart: number }
+        type State = { aliveState: Alive? }
+
+        local function fromDynamicIndex(states: { [string]: State }, key: string): number?
+            local aliveState = states[key].aliveState
+            if aliveState == nil then
+                return nil
+            end
+            return aliveState.rootPart
+        end
+
+        local function fromCall(getState: () -> State): number?
+            local aliveState = getState().aliveState
+            if aliveState == nil then
+                return nil
+            end
+            return aliveState.rootPart
+        end
+    )"));
+
+    CheckResult unstableSource = check(R"(
+        --!strict
+
+        type A = { read kind: "a", read aOnly: number }
+        type B = { read kind: "b", read bOnly: number }
+        type Variant = A | B
+
+        local function read(values: { [string]: Variant }, key: string): number?
+            local kind = values[key].kind
+            if kind == "a" then
+                return values[key].aOnly
+            end
+            return nil
+        end
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, unstableSource);
+    CHECK(get<MissingUnionProperty>(unstableSource.errors[0]));
+}
+
 TEST_CASE_FIXTURE(Fixture, "readonly_property_discriminant_alias_refines_its_source")
 {
     ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
@@ -3913,6 +3961,58 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "impossible_property_refinement_of_recursive_
             end
         end
     )"));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "property_refined_metatable_preserves_writable_table_capabilities")
+{
+    ScopedFastFlag solverFlag{FFlag::DebugLuauForceOldSolver, false};
+    ScopedFastFlag metatableWriteFlag{FFlag::LuauFixPropReadsOnMetatableTypes, true};
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        --!strict
+
+        local Class = {}
+        Class.__index = Class
+
+        type Data<T> = {
+            locked: T?,
+            requested: boolean,
+        }
+        type Class<T> = setmetatable<Data<T>, typeof(Class)>
+
+        local function update<T>(self: Class<T>)
+            if self.locked == nil then
+                self.requested = true
+            else
+                self.locked = nil
+            end
+        end
+    )"));
+
+    CheckResult invalidWrites = check(R"(
+        --!strict
+
+        local Class = {}
+        Class.__index = Class
+
+        type Data = {
+            locked: number?,
+            requested: boolean,
+        }
+        type Class = setmetatable<Data, typeof(Class)>
+
+        local function update(self: Class)
+            if self.locked == nil then
+                self.requested = "yes"
+            else
+                self.locked = "no"
+            end
+        end
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(2, invalidWrites);
+    CHECK(get<TypeMismatch>(invalidWrites.errors[0]));
+    CHECK(get<TypeMismatch>(invalidWrites.errors[1]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "post_if_phi_preserves_the_refined_incoming_discriminated_arm")
