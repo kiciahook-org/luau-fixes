@@ -1288,7 +1288,21 @@ TypeFunctionReductionResult<TypeId> refineTypeFunction(
     // refine it, but more likely we end up with some type explosion in
     // normalization.
     FindRefinementBlockers frb;
-    frb.traverse(targetTy);
+    TypeId blockerTarget = targetTy;
+    if (auto mt = get<MetatableType>(targetTy); mt && std::all_of(
+                                                          discriminantTypes.begin(),
+                                                          discriminantTypes.end(),
+                                                          [](TypeId ty)
+                                                          {
+                                                              return is<TableType>(follow(ty));
+                                                          }
+                                                      ))
+    {
+        // Property refinements constrain the table component of a metatable type. Traversing the recursive
+        // metatable component here can create a dependency cycle with methods that are still being inferred.
+        blockerTarget = mt->table;
+    }
+    frb.traverse(blockerTarget);
     if (!frb.found.empty())
         return {std::nullopt, Reduction::MaybeOk, {frb.found.begin(), frb.found.end()}, {}};
 
@@ -1308,8 +1322,19 @@ TypeFunctionReductionResult<TypeId> refineTypeFunction(
         if (!frb.found.empty())
             return {nullptr, {frb.found.begin(), frb.found.end()}};
 
-        if (auto ty = intersectWithSimpleDiscriminant(ctx->builtins, ctx->arena, target, discriminant))
-            return {*ty, {}};
+        const MetatableType* mt = get<MetatableType>(target);
+        const bool refineTableComponent = mt && is<TableType>(follow(discriminant));
+        TypeId refinementTarget = refineTableComponent ? mt->table : target;
+        auto restoreMetatable = [ctx, mt, refineTableComponent](TypeId refined)
+        {
+            if (!refineTableComponent || is<NeverType>(follow(refined)))
+                return refined;
+
+            return ctx->arena->addType(MetatableType{refined, mt->metatable, mt->syntheticName});
+        };
+
+        if (auto ty = intersectWithSimpleDiscriminant(ctx->builtins, ctx->arena, refinementTarget, discriminant))
+            return {restoreMetatable(*ty), {}};
 
         // NOTE: This block causes us to refine too early in some cases.
         if (auto negation = get<NegationType>(discriminant))
@@ -1324,9 +1349,9 @@ TypeFunctionReductionResult<TypeId> refineTypeFunction(
         // If the target type is a table, then simplification already implements the logic to deal with refinements properly since the
         // type of the discriminant is guaranteed to only ever be an (arbitrarily-nested) table of a single property type.
         // We also fire for simple discriminants such as false? and ~(false?): the falsy and truthy types respectively.
-        if (is<TableType>(target) || isTruthyOrFalsyType(discriminant))
+        if (is<TableType>(refinementTarget) || isTruthyOrFalsyType(discriminant))
         {
-            SimplifyResult result = simplifyIntersection(ctx->builtins, ctx->arena, target, discriminant);
+            SimplifyResult result = simplifyIntersection(ctx->builtins, ctx->arena, refinementTarget, discriminant);
             // Simplification considers free and generic types to be
             // 'blocking', but that's not suitable for refine<>.
             //
@@ -1341,12 +1366,10 @@ TypeFunctionReductionResult<TypeId> refineTypeFunction(
                     }
                 ))
             {
-                return {result.result, {}};
+                return {restoreMetatable(result.result), {}};
             }
             else
                 return {nullptr, {result.blockedTypes.begin(), result.blockedTypes.end()}};
-
-            return {result.result, {}};
         }
 
 

@@ -3245,4 +3245,105 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "indexing_into_error_gives_error")
     )"));
 }
 
+TEST_CASE_FIXTURE(BuiltinsFixture, "property_refinements_preserve_recursive_metatable_receiver")
+{
+    ScopedFastFlag _{FFlag::DebugLuauForceOldSolver, false};
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        --!strict
+
+        type TickPlan = {
+            action: (() -> ())?,
+        }
+        type CharacterState = {
+            alive: boolean,
+            root: {
+                position: number,
+            },
+        }
+        type FighterState = {
+            environmentId: string?,
+            character: {
+                state: CharacterState,
+            },
+        }
+        type Controller = {
+            getPosition: (Controller) -> number,
+        }
+        type Context = {
+            fighterState: FighterState,
+            controller: Controller,
+        }
+
+        local Class = {}
+        Class.__index = Class
+
+        type Data = {
+            enabled: boolean,
+            context: Context?,
+        }
+        type Class = setmetatable<Data, typeof(Class)>
+
+        function Class.reset(self: Class) end
+
+        function Class.plan(self: Class, position: number, rootPosition: number): TickPlan
+            return {}
+        end
+
+        function Class.apply(self: Class, plan: TickPlan, context: Context) end
+
+        function Class.update(self: Class)
+            local context = self.context
+            if context == nil then
+                self:reset()
+                return
+            end
+
+            local fighterState = context.fighterState
+            if fighterState.environmentId == nil or not self.enabled then
+                self:reset()
+                return
+            end
+
+            local characterState = fighterState.character.state
+            if not characterState.alive then
+                self:reset()
+                return
+            end
+
+            local controller = context.controller
+            local position = controller:getPosition()
+            local plan = self:plan(position, characterState.root.position)
+            self:apply(plan, context)
+
+            local action = plan.action
+            if action ~= nil then
+                action()
+            end
+        end
+    )"));
+
+    CHECK_EQ("(() -> ())?", toString(requireTypeAtPosition({67, 34})));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "impossible_property_refinement_of_recursive_metatable_is_never")
+{
+    ScopedFastFlag _{FFlag::DebugLuauForceOldSolver, false};
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        --!strict
+
+        local Class = {}
+        Class.__index = Class
+
+        type Class = setmetatable<{ tag: "a" }, typeof(Class)>
+
+        function Class.check(self: Class)
+            if self.tag == "b" then
+                local impossible: never = self
+            end
+        end
+    )"));
+}
+
 TEST_SUITE_END();
