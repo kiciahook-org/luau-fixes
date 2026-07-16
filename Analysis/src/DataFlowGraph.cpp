@@ -104,6 +104,27 @@ const RefinementKey* DataFlowGraph::getRefinementKey(const AstExpr* expr) const
     return nullptr;
 }
 
+const RefinementKey* DataFlowGraph::getRefinementKeyProvenanceThroughCondition(const AstExpr* expr, const AstExpr* throughExpr) const
+{
+    auto provenance = refinementKeyProvenance.find(expr);
+    if (!provenance)
+        return nullptr;
+
+    while (auto parent = astConditionParents.find(throughExpr))
+        throughExpr = *parent;
+
+    auto throughGeneration = astMutationGenerations.find(throughExpr);
+    if (throughGeneration && provenance->mutationGeneration == *throughGeneration)
+        return provenance->key;
+
+    return nullptr;
+}
+
+bool DataFlowGraph::isWrittenByCapturedLocal(const AstLocal* local) const
+{
+    return writtenByCapturedLocals.contains(local);
+}
+
 std::optional<Symbol> DataFlowGraph::getSymbolFromDef(const Def* def) const
 {
     if (auto ref = defToSymbol.find(def))
@@ -159,6 +180,12 @@ DataFlowGraphBuilder::DataFlowGraphBuilder(NotNull<DefArena> defArena, NotNull<R
 {
 }
 
+void DataFlowGraphBuilder::invalidateRefinementKeyProvenance()
+{
+    ++mutationGeneration;
+    activeRefinementKeyProvenance.clear();
+}
+
 DataFlowGraph DataFlowGraphBuilder::build(
     AstStatBlock* block,
     NotNull<DefArena> defArena,
@@ -197,6 +224,7 @@ void DataFlowGraphBuilder::resolveCaptures()
         std::vector<DefId> operands;
         for (size_t i = capture.versionOffset; i < capture.allVersions.size(); ++i)
             collectOperands(capture.allVersions[i], &operands);
+
 
         for (DefId captureDef : capture.captureDefs)
         {
@@ -495,6 +523,7 @@ ControlFlow DataFlowGraphBuilder::visit(AstStatWhile* w)
     // While the first iteration is fine, the second iteration would
     // allow a string to flow into a position that expects.
     DfgScope* whileScope = makeChildScope(DfgScope::Loop);
+    invalidateRefinementKeyProvenance();
 
     ControlFlow cf;
     {
@@ -502,6 +531,7 @@ ControlFlow DataFlowGraphBuilder::visit(AstStatWhile* w)
         visitExpr(w->condition);
         cf = visit(w->body);
     }
+    invalidateRefinementKeyProvenance();
 
     auto scope = currentScope();
     // If the inner loop unconditionally returns or throws we shouldn't
@@ -517,6 +547,7 @@ ControlFlow DataFlowGraphBuilder::visit(AstStatRepeat* r)
     // See comment in visit(AstStatWhile*): this is unsound as it
     // does not consider the _second_ loop iteration.
     DfgScope* repeatScope = makeChildScope(DfgScope::Loop);
+    invalidateRefinementKeyProvenance();
 
     ControlFlow cf;
 
@@ -525,6 +556,7 @@ ControlFlow DataFlowGraphBuilder::visit(AstStatRepeat* r)
         cf = visitBlockWithoutChildScope(r->body);
         visitExpr(r->condition);
     }
+    invalidateRefinementKeyProvenance();
 
     // Ultimately: the options for a repeat-until loop are more
     // straightforward.
@@ -567,10 +599,10 @@ ControlFlow DataFlowGraphBuilder::visit(AstStatExpr* e)
 ControlFlow DataFlowGraphBuilder::visit(AstStatLocal* l)
 {
     // We're gonna need a `visitExprList` and `visitVariadicExpr` (function calls and `...`)
-    std::vector<DefId> defs;
-    defs.reserve(l->values.size);
+    std::vector<DataFlowResult> values;
+    values.reserve(l->values.size);
     for (AstExpr* e : l->values)
-        defs.push_back(visitExpr(e).def);
+        values.push_back(visitExpr(e));
 
     for (size_t i = 0; i < l->vars.size; ++i)
     {
@@ -580,16 +612,18 @@ ControlFlow DataFlowGraphBuilder::visit(AstStatLocal* l)
 
         // We need to create a new def to intentionally avoid alias tracking, but we'd like to
         // make sure that the non-aliased defs are also marked as a subscript for refinements.
-        bool subscripted = i < defs.size() && containsSubscriptedDefinition(defs[i]);
+        bool subscripted = i < values.size() && containsSubscriptedDefinition(values[i].def);
         DefId def = defArena->freshCell(local, local->location, subscripted);
         if (i < l->values.size)
         {
             AstExpr* e = l->values.data[i];
             if (e->is<AstExprTable>())
             {
-                def = defs[i];
+                def = values[i].def;
             }
         }
+        if (i < values.size() && values[i].provenance && values[i].mutationGeneration == mutationGeneration)
+            activeRefinementKeyProvenance[def] = values[i].provenance;
         graph.localDefs[local] = def;
         currentScope()->bindings[local] = def;
         captures[local].allVersions.push_back(def);
@@ -608,6 +642,7 @@ ControlFlow DataFlowGraphBuilder::visit(AstStatFor* f)
     visitExpr(f->to);
     if (f->step)
         visitExpr(f->step);
+    invalidateRefinementKeyProvenance();
 
     ControlFlow cf;
     {
@@ -623,6 +658,7 @@ ControlFlow DataFlowGraphBuilder::visit(AstStatFor* f)
 
         cf = visit(f->body);
     }
+    invalidateRefinementKeyProvenance();
 
     auto scope = currentScope();
     // If the inner loop unconditionally returns or throws we shouldn't
@@ -636,6 +672,7 @@ ControlFlow DataFlowGraphBuilder::visit(AstStatFor* f)
 ControlFlow DataFlowGraphBuilder::visit(AstStatForIn* f)
 {
     DfgScope* forScope = makeChildScope(DfgScope::Loop);
+    invalidateRefinementKeyProvenance();
 
     ControlFlow cf;
     {
@@ -659,6 +696,7 @@ ControlFlow DataFlowGraphBuilder::visit(AstStatForIn* f)
 
         cf = visit(f->body);
     }
+    invalidateRefinementKeyProvenance();
 
     auto scope = currentScope();
     // If the inner loop unconditionally returns or throws we shouldn't
@@ -689,6 +727,7 @@ ControlFlow DataFlowGraphBuilder::visit(AstStatCompoundAssign* c)
 {
     (void)visitExpr(c->value);
     (void)visitExpr(c->var);
+    invalidateRefinementKeyProvenance();
 
     return ControlFlow::None;
 }
@@ -900,7 +939,14 @@ DataFlowResult DataFlowGraphBuilder::visitExpr(AstExpr* e)
     if (auto def = graph.astDefs.find(e))
     {
         auto key = graph.astRefinementKeys.find(e);
-        return {NotNull{*def}, key ? *key : nullptr};
+        auto provenance = graph.refinementKeyProvenance.find(e);
+        auto generation = graph.astMutationGenerations.find(e);
+        return {
+            NotNull{*def},
+            key ? *key : nullptr,
+            provenance ? provenance->key : nullptr,
+            generation ? *generation : mutationGeneration,
+        };
     }
 
     auto go = [&]() -> DataFlowResult
@@ -951,31 +997,39 @@ DataFlowResult DataFlowGraphBuilder::visitExpr(AstExpr* e)
             handle->ice("Unknown AstExpr in DataFlowGraphBuilder::visitExpr");
     };
 
-    auto [def, key] = go();
+    DataFlowResult result = go();
+    if (!result.provenance && result.parent && result.parent->propName)
+        result.provenance = result.parent;
+    result.mutationGeneration = mutationGeneration;
+    graph.astMutationGenerations[e] = mutationGeneration;
+    if (result.provenance)
+        graph.refinementKeyProvenance[e] = {result.provenance, mutationGeneration};
 
     if (FFlag::LuauDoNotOverwriteAstDefs)
     {
         if (!graph.astDefs.contains(e))
         {
-            graph.astDefs[e] = def;
+            graph.astDefs[e] = result.def;
             LUAU_ASSERT(!graph.astRefinementKeys.contains(e));
-            if (key)
-                graph.astRefinementKeys[e] = key;
+            if (result.parent)
+                graph.astRefinementKeys[e] = result.parent;
         }
     }
     else
     {
-        graph.astDefs[e] = def;
-        if (key)
-            graph.astRefinementKeys[e] = key;
+        graph.astDefs[e] = result.def;
+        if (result.parent)
+            graph.astRefinementKeys[e] = result.parent;
     }
 
-    return {def, key};
+    return result;
 }
 
 DataFlowResult DataFlowGraphBuilder::visitExpr(AstExprGroup* group)
 {
-    return visitExpr(group->expr);
+    DataFlowResult result = visitExpr(group->expr);
+    graph.astConditionParents[group->expr] = group;
+    return result;
 }
 
 DataFlowResult DataFlowGraphBuilder::visitExpr(AstExprLocal* l)
@@ -983,7 +1037,10 @@ DataFlowResult DataFlowGraphBuilder::visitExpr(AstExprLocal* l)
     DefId def = lookup(l->local, l->local->location);
     const RefinementKey* key = keyArena->leaf(def);
     graph.defToSymbol[def] = l->local;
-    return {def, key};
+    const RefinementKey* provenance = nullptr;
+    if (auto active = activeRefinementKeyProvenance.find(def))
+        provenance = *active;
+    return {def, key, provenance, mutationGeneration};
 }
 
 DataFlowResult DataFlowGraphBuilder::visitExpr(AstExprGlobal* g)
@@ -1033,8 +1090,9 @@ DataFlowResult DataFlowGraphBuilder::visitExpr(AstExprCall* c)
         DfgScope* child = makeChildScope();
         scopeStack.push_back(child);
 
-        auto [def, key] = *result;
-        
+        DefId def = result->def;
+        const RefinementKey* key = result->parent;
+
         if (FFlag::LuauDoNotOverwriteAstDefs)
         {
             if (!graph.astDefs.contains(firstArg))
@@ -1055,6 +1113,7 @@ DataFlowResult DataFlowGraphBuilder::visitExpr(AstExprCall* c)
         visitLValue(firstArg, def);
     }
 
+    invalidateRefinementKeyProvenance();
     // We treat function calls as "subscripted" as they could potentially
     // return a subscripted value, consider:
     //
@@ -1070,24 +1129,24 @@ DataFlowResult DataFlowGraphBuilder::visitExpr(AstExprCall* c)
 
 DataFlowResult DataFlowGraphBuilder::visitExpr(AstExprIndexName* i)
 {
-    auto [parentDef, parentKey] = visitExpr(i->expr);
+    DataFlowResult parent = visitExpr(i->expr);
     std::string index = i->index.value;
 
-    DefId def = lookup(parentDef, index, i->location);
-    return {def, keyArena->node(parentKey, def, index)};
+    DefId def = lookup(parent.def, index, i->location);
+    return {def, keyArena->node(parent.parent, def, index)};
 }
 
 DataFlowResult DataFlowGraphBuilder::visitExpr(AstExprIndexExpr* i)
 {
-    auto [parentDef, parentKey] = visitExpr(i->expr);
+    DataFlowResult parent = visitExpr(i->expr);
     visitExpr(i->index);
 
     if (auto string = i->index->as<AstExprConstantString>())
     {
         std::string index{string->value.data, string->value.size};
 
-        DefId def = lookup(parentDef, index, i->location);
-        return {def, keyArena->node(parentKey, def, index)};
+        DefId def = lookup(parent.def, index, i->location);
+        return {def, keyArena->node(parent.parent, def, index)};
     }
 
     return {defArena->freshCell(Symbol{}, i->location, /* subscripted= */ true), nullptr};
@@ -1166,6 +1225,8 @@ DataFlowResult DataFlowGraphBuilder::visitExpr(AstExprTable* t)
 DataFlowResult DataFlowGraphBuilder::visitExpr(AstExprUnary* u)
 {
     visitExpr(u->expr);
+    if (u->op == AstExprUnary::Op::Not)
+        graph.astConditionParents[u->expr] = u;
 
     return {defArena->freshCell(Symbol{}, u->location), nullptr};
 }
@@ -1174,6 +1235,15 @@ DataFlowResult DataFlowGraphBuilder::visitExpr(AstExprBinary* b)
 {
     auto left = visitExpr(b->left);
     auto right = visitExpr(b->right);
+
+    if (b->op == AstExprBinary::CompareEq || b->op == AstExprBinary::CompareNe)
+        graph.astConditionParents[b->right] = b;
+    else if (b->op == AstExprBinary::And || b->op == AstExprBinary::Or)
+    {
+        graph.astConditionParents[b->left] = b;
+        graph.astConditionParents[b->right] = b;
+    }
+
     // I think there's some subtlety here. There are probably cases where
     // X or Y / X and Y can _never_ "be subscripted."
     auto subscripted = (b->op == AstExprBinary::And || b->op == AstExprBinary::Or) &&
@@ -1183,10 +1253,10 @@ DataFlowResult DataFlowGraphBuilder::visitExpr(AstExprBinary* b)
 
 DataFlowResult DataFlowGraphBuilder::visitExpr(AstExprTypeAssertion* t)
 {
-    auto [def, key] = visitExpr(t->expr);
+    DataFlowResult result = visitExpr(t->expr);
     visitType(t->annotation);
 
-    return {def, key};
+    return result;
 }
 
 DataFlowResult DataFlowGraphBuilder::visitExpr(AstExprIfElse* i)
@@ -1278,7 +1348,11 @@ DefId DataFlowGraphBuilder::visitLValue(AstExprLocal* l, DefId incomingDef)
         return updated;
     }
     else
+    {
+        graph.writtenByCapturedLocals.insert(l->local);
+        invalidateRefinementKeyProvenance();
         return visitExpr(static_cast<AstExpr*>(l)).def;
+    }
 }
 
 DefId DataFlowGraphBuilder::visitLValue(AstExprGlobal* g, DefId incomingDef)
@@ -1294,6 +1368,7 @@ DefId DataFlowGraphBuilder::visitLValue(AstExprGlobal* g, DefId incomingDef)
 DefId DataFlowGraphBuilder::visitLValue(AstExprIndexName* i, DefId incomingDef)
 {
     DefId parentDef = visitExpr(i->expr).def;
+    invalidateRefinementKeyProvenance();
 
     DfgScope* scope = currentScope();
     DefId updated = defArena->freshCell(i->index, i->location, containsSubscriptedDefinition(incomingDef));
@@ -1305,6 +1380,7 @@ DefId DataFlowGraphBuilder::visitLValue(AstExprIndexExpr* i, DefId incomingDef)
 {
     DefId parentDef = visitExpr(i->expr).def;
     visitExpr(i->index);
+    invalidateRefinementKeyProvenance();
 
     DfgScope* scope = currentScope();
     if (auto string = i->index->as<AstExprConstantString>())

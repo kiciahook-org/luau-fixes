@@ -22,6 +22,12 @@ struct RefinementKey
     std::optional<std::string> propName;
 };
 
+struct RefinementKeyProvenance
+{
+    const RefinementKey* key;
+    size_t mutationGeneration;
+};
+
 struct RefinementKeyArena
 {
     TypedAllocator<RefinementKey> allocator;
@@ -45,6 +51,8 @@ struct DataFlowGraph
     DefId getDef(const AstStatDeclareFunction* func) const;
 
     const RefinementKey* getRefinementKey(const AstExpr* expr) const;
+    const RefinementKey* getRefinementKeyProvenanceThroughCondition(const AstExpr* expr, const AstExpr* throughExpr) const;
+    bool isWrittenByCapturedLocal(const AstLocal* local) const;
 
     std::optional<Symbol> getSymbolFromDef(const Def* def) const;
 
@@ -68,6 +76,10 @@ private:
     DenseHashMap<const Def*, Symbol> defToSymbol{nullptr};
 
     DenseHashMap<const AstExpr*, const RefinementKey*> astRefinementKeys{nullptr};
+    DenseHashMap<const AstExpr*, RefinementKeyProvenance> refinementKeyProvenance{nullptr};
+    DenseHashMap<const AstExpr*, size_t> astMutationGenerations{nullptr};
+    DenseHashMap<const AstExpr*, const AstExpr*> astConditionParents{nullptr};
+    DenseHashSet<const AstLocal*> writtenByCapturedLocals{nullptr};
     friend struct DataFlowGraphBuilder;
 };
 
@@ -99,6 +111,8 @@ struct DataFlowResult
 {
     DefId def;
     const RefinementKey* parent = nullptr;
+    const RefinementKey* provenance = nullptr;
+    size_t mutationGeneration = 0;
 };
 
 using ScopeStack = std::vector<DfgScope*>;
@@ -141,6 +155,9 @@ private:
     };
 
     DenseHashMap<Symbol, FunctionCapture> captures{Symbol{}};
+    DenseHashMap<const Def*, const RefinementKey*> activeRefinementKeyProvenance{nullptr};
+    size_t mutationGeneration = 0;
+    void invalidateRefinementKeyProvenance();
     void resolveCaptures();
 
     DfgScope* makeChildScope(DfgScope::ScopeType scopeType = DfgScope::Linear);

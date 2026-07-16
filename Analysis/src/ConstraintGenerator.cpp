@@ -254,6 +254,42 @@ struct GlobalNameCollector : public AstVisitor
     }
 };
 
+bool isReadOnlyProperty(TypeId ty, const std::string& propName)
+{
+    ty = follow(ty);
+
+    if (const TableType* table = get<TableType>(ty))
+    {
+        auto prop = table->props.find(propName);
+        return prop != table->props.end() && prop->second.isReadOnly();
+    }
+
+    if (const ExternType* externType = get<ExternType>(ty))
+    {
+        for (; externType; externType = externType->parent ? get<ExternType>(follow(*externType->parent)) : nullptr)
+        {
+            auto prop = externType->props.find(propName);
+            if (prop != externType->props.end())
+                return prop->second.isReadOnly();
+        }
+
+        return false;
+    }
+
+    if (const UnionType* unionType = get<UnionType>(ty))
+    {
+        for (TypeId option : unionType->options)
+        {
+            if (!isReadOnlyProperty(option, propName))
+                return false;
+        }
+
+        return !unionType->options.empty();
+    }
+
+    return false;
+}
+
 } // namespace
 
 ConstraintGenerator::ConstraintGenerator(
@@ -3717,6 +3753,30 @@ std::tuple<TypeId, TypeId, RefinementId> ConstraintGenerator::checkBinary(
     if (op != AstExprBinary::And && op != AstExprBinary::Or && op != AstExprBinary::CompareEq && op != AstExprBinary::CompareNe)
         inContext.emplace(&typeContext, TypeContext::Default);
 
+    auto refinementKey = [&](AstExpr* expr)
+    {
+        const RefinementKey* provenance = dfg->getRefinementKeyProvenanceThroughCondition(expr, right);
+        if (!provenance)
+            return dfg->getRefinementKey(expr);
+
+        const RefinementKey* root = provenance;
+        while (root->parent)
+            root = root->parent;
+        std::optional<Symbol> rootSymbol = dfg->getSymbolFromDef(root->def);
+        if (rootSymbol && rootSymbol->local && dfg->isWrittenByCapturedLocal(rootSymbol->local))
+            return dfg->getRefinementKey(expr);
+
+        for (const RefinementKey* key = provenance; key->parent; key = key->parent)
+        {
+            LUAU_ASSERT(key->propName);
+            std::optional<TypeId> parentType = lookup(scope, expr->location, key->parent->def, /*prototype=*/false);
+            if (!parentType || !isReadOnlyProperty(*parentType, *key->propName))
+                return dfg->getRefinementKey(expr);
+        }
+
+        return provenance;
+    };
+
     if (op == AstExprBinary::And)
     {
         std::optional<TypeId> relaxedExpectedLhs;
@@ -3752,7 +3812,7 @@ std::tuple<TypeId, TypeId, RefinementId> ConstraintGenerator::checkBinary(
         TypeId leftType = check(scope, left).ty;
         TypeId rightType = check(scope, right).ty;
 
-        const RefinementKey* key = dfg->getRefinementKey(typeguard->target);
+        const RefinementKey* key = refinementKey(typeguard->target);
         if (!key)
             return {leftType, rightType, nullptr};
 
@@ -3813,8 +3873,8 @@ std::tuple<TypeId, TypeId, RefinementId> ConstraintGenerator::checkBinary(
         TypeId leftType = check(scope, left, {}, true).ty;
         TypeId rightType = check(scope, right, {}, true).ty;
 
-        RefinementId leftRefinement = refinementArena.proposition(dfg->getRefinementKey(left), rightType);
-        RefinementId rightRefinement = refinementArena.proposition(dfg->getRefinementKey(right), leftType);
+        RefinementId leftRefinement = refinementArena.proposition(refinementKey(left), rightType);
+        RefinementId rightRefinement = refinementArena.proposition(refinementKey(right), leftType);
 
         if (op == AstExprBinary::CompareNe)
         {

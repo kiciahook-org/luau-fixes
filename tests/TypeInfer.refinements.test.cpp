@@ -2094,6 +2094,271 @@ TEST_CASE_FIXTURE(Fixture, "cat_or_dog_through_a_local")
     CHECK_EQ("Cat | Dog", toString(requireTypeAtPosition({10, 28})));
 }
 
+TEST_CASE_FIXTURE(Fixture, "readonly_property_discriminant_alias_refines_its_source")
+{
+    ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
+
+    CheckResult result = check(R"(
+        type A = { read kind: "a", read aOnly: number }
+        type B = { read kind: "b", read bOnly: number }
+        type Variant = A | B
+
+        local function direct(value: Variant)
+            if value.kind == "a" then
+                local directResult = value
+            end
+        end
+
+        local function throughAlias(value: Variant)
+            local kind = value.kind
+            if kind == "a" then
+                local aliasResult = value
+            end
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK_EQ("A", toString(requireTypeAtPosition({7, 37})));
+    CHECK_EQ("A", toString(requireTypeAtPosition({14, 36})));
+}
+
+TEST_CASE_FIXTURE(Fixture, "property_discriminant_alias_provenance_respects_compound_condition_evaluation_order")
+{
+    ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
+
+    CheckResult result = check(R"(
+        type A = { read kind: "a", read aOnly: number }
+        type B = { read kind: "b", read bOnly: number }
+        type Variant = A | B
+
+        local function sideEffectFreeAnd(value: Variant, flag: boolean)
+            local kind = value.kind
+            if kind == "a" and flag then
+                local sideEffectFreeAndResult = value
+            end
+        end
+
+        local function sideEffectFreeNested(value: Variant, first: boolean, second: boolean)
+            local kind = value.kind
+            if (kind == "a" and first) or (kind == "a" and second) then
+                local sideEffectFreeNestedResult = value
+            end
+        end
+
+        local function laterCall(value: Variant, mutate: (Variant) -> boolean)
+            local kind = value.kind
+            if kind == "a" and mutate(value) then
+                local afterLaterCall = value
+            end
+        end
+
+        local function nestedLaterCall(value: Variant, mutate: (Variant) -> boolean, flag: boolean)
+            local kind = value.kind
+            if (kind == "a" and flag) and mutate(value) then
+                local afterNestedLaterCall = value
+            end
+        end
+
+        local function nestedOrLaterCall(value: Variant, mutate: (Variant) -> boolean)
+            local kind = value.kind
+            if (kind == "a" and mutate(value)) or false then
+                local afterNestedOrLaterCall = value
+            end
+        end
+
+        local function unaryLaterCall(value: Variant, mutate: (Variant) -> boolean)
+            local kind = value.kind
+            if not (kind ~= "a") and mutate(value) then
+                local afterUnaryLaterCall = value
+            end
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK_EQ("A", toString(requireTypeAtPosition({8, 48})));
+    // Both paths carry the property proof; collapsing this structural refinement to A is outside this regression's scope.
+    CHECK_EQ(R"((A & { read kind: "a" | "a" }) | (B & { read kind: "a" | "a" }))", toString(requireTypeAtPosition({15, 51})));
+    CHECK_EQ("A | B", toString(requireTypeAtPosition({22, 39})));
+    CHECK_EQ("A | B", toString(requireTypeAtPosition({29, 45})));
+    CHECK_EQ("A | B", toString(requireTypeAtPosition({36, 47})));
+    CHECK_EQ("A | B", toString(requireTypeAtPosition({43, 44})));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "readonly_extern_property_discriminant_alias_refines_its_source")
+{
+    ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
+
+    loadDefinition(R"(
+        declare extern type A with
+            read kind: "a"
+            read aOnly: number
+        end
+
+        declare extern type B with
+            read kind: "b"
+            read bOnly: number
+        end
+    )");
+
+    CheckResult result = check(R"(
+        local function direct(value: A | B)
+            if value.kind == "a" then
+                local directExternResult = value
+            end
+        end
+
+        local function throughAlias(value: A | B)
+            local kind = value.kind
+            if kind == "a" then
+                local aliasExternResult = value
+            end
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK_EQ("A", toString(requireTypeAtPosition({3, 43})));
+    CHECK_EQ("A", toString(requireTypeAtPosition({10, 42})));
+}
+
+TEST_CASE_FIXTURE(Fixture, "property_discriminant_alias_provenance_is_conservatively_invalidated")
+{
+    ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
+
+    CheckResult result = check(R"(
+        type A = {
+            read kind: "a",
+            write kind: "a" | "b",
+            read aOnly: number,
+            [string]: unknown,
+        }
+        type B = {
+            read kind: "b",
+            write kind: "a" | "b",
+            read bOnly: number,
+            [string]: unknown,
+        }
+        type Variant = A | B
+
+        local function reassignedAlias(value: Variant)
+            local kind = value.kind
+            kind = "a"
+            if kind == "a" then
+                local afterAliasReassignment = value
+            end
+        end
+
+        local function writableSource(value: Variant)
+            local kind = value.kind
+            if kind == "a" then
+                local fromWritableSource = value
+            end
+        end
+
+        local function writtenSource(value: Variant)
+            local kind = value.kind
+            value.kind = "a"
+            if kind == "a" then
+                local afterSourceWrite = value
+            end
+        end
+
+        local function dynamicWrite(value: Variant, key: string)
+            local kind = value.kind
+            value[key] = nil
+            if kind == "a" then
+                local afterDynamicWrite = value
+            end
+        end
+
+        local function mutationCapableCall(value: Variant, mutate: (Variant) -> ())
+            local kind = value.kind
+            mutate(value)
+            if kind == "a" then
+                local afterMutationCapableCall = value
+            end
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK_EQ("A | B", toString(requireTypeAtPosition({19, 47})));
+    CHECK_EQ("A | B", toString(requireTypeAtPosition({26, 43})));
+    CHECK_EQ("A | B", toString(requireTypeAtPosition({34, 41})));
+    CHECK_EQ("A | B", toString(requireTypeAtPosition({42, 42})));
+    CHECK_EQ("A | B", toString(requireTypeAtPosition({50, 49})));
+}
+
+TEST_CASE_FIXTURE(Fixture, "property_discriminant_alias_provenance_is_versioned")
+{
+    ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
+
+    CheckResult result = check(R"(
+        type A = { read kind: "a", read aOnly: number }
+        type B = { read kind: "b", read bOnly: number }
+        type Variant = A | B
+
+        local function aliasChain(value: Variant)
+            local first = value.kind
+            local second = first
+            if second == "a" then
+                local chainedAliasResult = value
+            end
+        end
+
+        local function upvalueReassignment(value: Variant, replacement: Variant)
+            local kind = value.kind
+            local function replace()
+                value = replacement
+                if kind == "a" then
+                    local afterUpvalueSourceReassignment = value
+                end
+            end
+        end
+
+        local function laterOperandCall(value: Variant, mutate: (Variant) -> ("a" | "b"))
+            local kind = value.kind
+            if kind == mutate(value) then
+                local afterLaterOperandCall = value
+            end
+        end
+
+        local function initializerCall(value: Variant, mutate: (Variant) -> boolean)
+            local kind, _ = value.kind, mutate(value)
+            if kind == "a" then
+                local afterInitializerCall = value
+            end
+        end
+
+        local function capturedWriter(value: Variant, replacement: Variant)
+            local kind = value.kind
+            local function mutate()
+                value = replacement
+            end
+            if kind == "a" then
+                mutate()
+                local afterCapturedWriter = value
+            end
+        end
+
+        local function loopBackedge(value: Variant, replacement: Variant, condition: boolean)
+            local kind = value.kind
+            while condition do
+                if kind == "a" then
+                    local afterLoopBackedge = value
+                end
+                value = replacement
+            end
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK_EQ("A", toString(requireTypeAtPosition({9, 43})));
+    CHECK_EQ("A | B", toString(requireTypeAtPosition({18, 59})));
+    CHECK_EQ("A | B", toString(requireTypeAtPosition({26, 46})));
+    CHECK_EQ("A | B", toString(requireTypeAtPosition({33, 45})));
+    CHECK_EQ("A | B", toString(requireTypeAtPosition({44, 44})));
+    CHECK_EQ("A | B", toString(requireTypeAtPosition({52, 46})));
+}
+
 TEST_CASE_FIXTURE(Fixture, "prove_that_dataflow_analysis_isnt_doing_alias_tracking_yet")
 {
     CheckResult result = check(R"(
