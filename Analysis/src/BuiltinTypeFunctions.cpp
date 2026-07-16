@@ -1485,6 +1485,12 @@ TypeFunctionReductionResult<TypeId> singletonTypeFunction(
     if (auto negation = get<NegationType>(followed))
         followed = follow(negation->ty);
 
+    // Extern types are nominally disjoint, so a positive equality refinement can
+    // safely preserve one as an identity discriminant. Do not do this through a
+    // negation: two distinct values of the same extern type may compare unequal.
+    if (!get<NegationType>(type) && get<ExternType>(followed))
+        return {type, Reduction::MaybeOk, {}, {}};
+
     // if we have a singleton type or `nil`, which is its own singleton type...
     if (get<SingletonType>(followed) || isNil(followed))
         return {type, Reduction::MaybeOk, {}, {}};

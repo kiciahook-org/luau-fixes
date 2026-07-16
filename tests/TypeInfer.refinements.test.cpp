@@ -131,6 +131,50 @@ struct RefinementExternTypeFixture : BuiltinsFixture
             {"Part1", Property{optionalPart}},
         };
 
+        TypeId discriminant = arena.addType(ExternType{"Discriminant", {}, rootSuper, std::nullopt, {}, nullptr, "Test", {}});
+        TypeId firstKind = arena.addType(ExternType{"FirstKind", {}, discriminant, std::nullopt, {}, nullptr, "Test", {}});
+        TypeId secondKind = arena.addType(ExternType{"SecondKind", {}, discriminant, std::nullopt, {}, nullptr, "Test", {}});
+        TypeId unrelatedKind = arena.addType(ExternType{"UnrelatedKind", {}, rootSuper, std::nullopt, {}, nullptr, "Test", {}});
+
+        TypeId firstVariant = arena.addType(ExternType{"FirstVariant", {}, rootSuper, std::nullopt, {}, nullptr, "Test", {}});
+        getMutable<ExternType>(firstVariant)->props = {{"Kind", Property::readonly(firstKind)}};
+        TypeId secondVariant = arena.addType(ExternType{"SecondVariant", {}, rootSuper, std::nullopt, {}, nullptr, "Test", {}});
+        getMutable<ExternType>(secondVariant)->props = {{"Kind", Property::readonly(secondKind)}};
+        TypeId commonVariant = arena.addType(ExternType{"CommonVariant", {}, rootSuper, std::nullopt, {}, nullptr, "Test", {}});
+        getMutable<ExternType>(commonVariant)->props = {{"Kind", Property::readonly(firstKind)}};
+
+        TypeId broadVariant = arena.addType(ExternType{"BroadVariant", {}, rootSuper, std::nullopt, {}, nullptr, "Test", {}});
+        getMutable<ExternType>(broadVariant)->props = {{"Kind", Property::readonly(discriminant)}};
+        TypeId writableVariant = arena.addType(ExternType{"WritableVariant", {}, rootSuper, std::nullopt, {}, nullptr, "Test", {}});
+        getMutable<ExternType>(writableVariant)->props = {{"Kind", Property::rw(firstKind)}};
+        TypeId missingVariant = arena.addType(ExternType{"MissingVariant", {}, rootSuper, std::nullopt, {}, nullptr, "Test", {}});
+        TypeId unknownVariant = arena.addType(ExternType{"UnknownVariant", {}, rootSuper, std::nullopt, {}, nullptr, "Test", {}});
+        getMutable<ExternType>(unknownVariant)->props = {{"Kind", Property::readonly(f.builtinTypes->unknownType)}};
+        TypeId recursiveVariant = arena.addType(ExternType{"RecursiveVariant", {}, rootSuper, std::nullopt, {}, nullptr, "Test", {}});
+        getMutable<ExternType>(recursiveVariant)->props = {{"Kind", Property::readonly(recursiveVariant)}};
+
+        TypeId eitherKind = arena.addType(UnionType{{firstKind, secondKind}});
+        TypeId ambiguousVariant = arena.addType(ExternType{"AmbiguousVariant", {}, rootSuper, std::nullopt, {}, nullptr, "Test", {}});
+        getMutable<ExternType>(ambiguousVariant)->props = {{"Kind", Property::readonly(eitherKind)}};
+
+        scope->bindings[AstName{"firstKindValue"}] = Binding{firstKind};
+        scope->bindings[AstName{"secondKindValue"}] = Binding{secondKind};
+        scope->bindings[AstName{"unrelatedKindValue"}] = Binding{unrelatedKind};
+
+        f.globals.globalScope->exportedTypeBindings["Discriminant"] = TypeFun{{}, discriminant};
+        f.globals.globalScope->exportedTypeBindings["FirstKind"] = TypeFun{{}, firstKind};
+        f.globals.globalScope->exportedTypeBindings["SecondKind"] = TypeFun{{}, secondKind};
+        f.globals.globalScope->exportedTypeBindings["UnrelatedKind"] = TypeFun{{}, unrelatedKind};
+        f.globals.globalScope->exportedTypeBindings["FirstVariant"] = TypeFun{{}, firstVariant};
+        f.globals.globalScope->exportedTypeBindings["SecondVariant"] = TypeFun{{}, secondVariant};
+        f.globals.globalScope->exportedTypeBindings["CommonVariant"] = TypeFun{{}, commonVariant};
+        f.globals.globalScope->exportedTypeBindings["BroadVariant"] = TypeFun{{}, broadVariant};
+        f.globals.globalScope->exportedTypeBindings["WritableVariant"] = TypeFun{{}, writableVariant};
+        f.globals.globalScope->exportedTypeBindings["MissingVariant"] = TypeFun{{}, missingVariant};
+        f.globals.globalScope->exportedTypeBindings["UnknownVariant"] = TypeFun{{}, unknownVariant};
+        f.globals.globalScope->exportedTypeBindings["RecursiveVariant"] = TypeFun{{}, recursiveVariant};
+        f.globals.globalScope->exportedTypeBindings["AmbiguousVariant"] = TypeFun{{}, ambiguousVariant};
+
         f.globals.globalScope->exportedTypeBindings["Vector3"] = TypeFun{{}, vec3};
         f.globals.globalScope->exportedTypeBindings["Instance"] = TypeFun{{}, inst};
         f.globals.globalScope->exportedTypeBindings["ExternScriptConnection"] = TypeFun{{}, scriptConnection};
@@ -2709,6 +2753,125 @@ TEST_CASE_FIXTURE(RefinementExternTypeFixture, "cli_140033_refine_union_of_exter
     )"));
 
     CHECK_EQ("Folder | Part", toString(requireTypeAtPosition({5, 28})));
+}
+
+TEST_CASE_FIXTURE(RefinementExternTypeFixture, "discriminate_union_of_extern_types_by_readonly_identity_property")
+{
+    ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
+
+    CheckResult result = check(R"(
+        local function exact(value: FirstVariant | SecondVariant)
+            if value.Kind == firstKindValue then
+                local selected = value
+            else
+                local rejected = value
+            end
+        end
+
+        local function commonKind(value: FirstVariant | SecondVariant, kind: Discriminant)
+            if value.Kind == kind then
+                local selected = value
+            else
+                local rejected = value
+            end
+        end
+
+        local function common(value: FirstVariant | CommonVariant)
+            if value.Kind == firstKindValue then
+                local selected = value
+            end
+        end
+
+        local function broad(value: BroadVariant | SecondVariant)
+            if value.Kind == firstKindValue then
+                local selected = value
+            else
+                local rejected = value
+            end
+        end
+
+        local function writable(value: WritableVariant | SecondVariant)
+            if value.Kind == firstKindValue then
+                local selected = value
+            end
+        end
+
+        local function unknown(value: UnknownVariant | SecondVariant)
+            if value.Kind == firstKindValue then
+                local selected = value
+            end
+        end
+
+
+        local function ambiguous(value: AmbiguousVariant | SecondVariant)
+            if value.Kind == firstKindValue then
+                local selected = value
+            else
+                local rejected = value
+            end
+        end
+
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK_EQ("FirstVariant", toString(requireTypeAtPosition({3, 33})));
+    CHECK_EQ("FirstVariant | SecondVariant", toString(requireTypeAtPosition({5, 33})));
+    CHECK_EQ("FirstVariant | SecondVariant", toString(requireTypeAtPosition({11, 33})));
+    CHECK_EQ("FirstVariant | SecondVariant", toString(requireTypeAtPosition({13, 33})));
+    CHECK_EQ("CommonVariant | FirstVariant", toString(requireTypeAtPosition({19, 33})));
+    CHECK_EQ("BroadVariant & { read Kind: FirstKind }", toString(requireTypeAtPosition({25, 33})));
+    CHECK_EQ("BroadVariant | SecondVariant", toString(requireTypeAtPosition({27, 33})));
+    CHECK_EQ("WritableVariant", toString(requireTypeAtPosition({33, 33})));
+    CHECK_EQ("UnknownVariant & { read Kind: FirstKind }", toString(requireTypeAtPosition({39, 33})));
+    CHECK_EQ("AmbiguousVariant & { read Kind: FirstKind }", toString(requireTypeAtPosition({46, 33})));
+    CHECK_EQ("AmbiguousVariant | SecondVariant", toString(requireTypeAtPosition({48, 33})));
+}
+
+TEST_CASE_FIXTURE(RefinementExternTypeFixture, "impossible_extern_discriminant_comparisons_remain_conservative")
+{
+    ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
+
+    CheckResult result = check(R"(
+        local function recursive(value: RecursiveVariant | SecondVariant)
+            if value.Kind == firstKindValue then
+                local selected = value
+            else
+                local rejected = value
+            end
+        end
+
+        local function unrelated(value: FirstVariant | SecondVariant)
+            if value.Kind == unrelatedKindValue then
+                local selected = value
+            else
+                local rejected = value
+            end
+        end
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(2, result);
+    const auto* recursiveComparison = get<CannotCompareUnrelatedTypes>(result.errors[0]);
+    const auto* unrelatedComparison = get<CannotCompareUnrelatedTypes>(result.errors[1]);
+    REQUIRE(recursiveComparison);
+    REQUIRE(unrelatedComparison);
+    CHECK_EQ(AstExprBinary::CompareEq, recursiveComparison->op);
+    CHECK_EQ(AstExprBinary::CompareEq, unrelatedComparison->op);
+}
+
+TEST_CASE_FIXTURE(RefinementExternTypeFixture, "missing_extern_discriminant_property_is_conservative")
+{
+    ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
+
+    CheckResult result = check(R"(
+        local function missing(value: FirstVariant | MissingVariant)
+            if value.Kind == firstKindValue then
+                local selected = value
+            end
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK_EQ("FirstVariant | MissingVariant", toString(requireTypeAtPosition({3, 33})));
 }
 
 TEST_CASE_FIXTURE(RefinementExternTypeFixture, "cannot_call_a_function_union")

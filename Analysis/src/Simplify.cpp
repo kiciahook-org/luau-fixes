@@ -3,6 +3,7 @@
 #include "Luau/Simplify.h"
 
 #include "Luau/BuiltinDefinitions.h"
+#include "Luau/BuiltinTypeFunctions.h"
 #include "Luau/Clone.h"
 #include "Luau/Common.h"
 #include "Luau/DenseHash.h"
@@ -1708,9 +1709,19 @@ TypeId TypeSimplifier::simplify(TypeId ty, DenseHashSet<TypeId>& seen)
 namespace
 {
 
-bool isSimpleDiscriminant(TypeId ty, DenseHashSet<TypeId>& seen)
+TypeId unwrapSingletonDiscriminant(NotNull<BuiltinTypes> builtinTypes, TypeId ty)
 {
-    ty = follow(ty);
+    if (auto instance = get<TypeFunctionInstanceType>(ty);
+        instance && !instance->userFuncName && instance->function->name == builtinTypes->typeFunctions->singletonFunc.name &&
+        instance->typeArguments.size() == 1 && instance->packArguments.empty() && get<ExternType>(follow(instance->typeArguments.front())))
+        return follow(instance->typeArguments.front());
+
+    return follow(ty);
+}
+
+bool isSimpleDiscriminant(NotNull<BuiltinTypes> builtinTypes, TypeId ty, DenseHashSet<TypeId>& seen)
+{
+    ty = unwrapSingletonDiscriminant(builtinTypes, ty);
     // If we *ever* see a recursive type, bail right away, clearly that is
     // not simple.
     if (seen.contains(ty))
@@ -1721,11 +1732,12 @@ bool isSimpleDiscriminant(TypeId ty, DenseHashSet<TypeId>& seen)
     if (auto ttv = get<TableType>(ty); ttv && ttv->props.size() == 1 && !ttv->indexer)
     {
         auto prop = begin(ttv->props)->second;
-        return (!prop.readTy || isSimpleDiscriminant(*prop.readTy, seen)) && (!prop.writeTy || isSimpleDiscriminant(*prop.writeTy, seen));
+        return (!prop.readTy || isSimpleDiscriminant(builtinTypes, *prop.readTy, seen)) &&
+               (!prop.writeTy || isSimpleDiscriminant(builtinTypes, *prop.writeTy, seen));
     }
 
     if (auto nt = get<NegationType>(ty))
-        return isSimpleDiscriminant(nt->ty, seen);
+        return isSimpleDiscriminant(builtinTypes, nt->ty, seen);
 
     return is<PrimitiveType, SingletonType, ExternType>(ty) || isApproximatelyTruthyType(ty) || isApproximatelyFalsyType(ty);
 }
@@ -1738,10 +1750,10 @@ bool isSimpleDiscriminant(TypeId ty, DenseHashSet<TypeId>& seen)
  *   who's read and write types are also simple.
  * - Cyclic types are never simple.
  */
-bool isSimpleDiscriminant(TypeId ty)
+bool isSimpleDiscriminant(NotNull<BuiltinTypes> builtinTypes, TypeId ty)
 {
     DenseHashSet<TypeId> seenSet{nullptr};
-    return isSimpleDiscriminant(ty, seenSet);
+    return isSimpleDiscriminant(builtinTypes, ty, seenSet);
 }
 
 } // namespace
@@ -1890,6 +1902,45 @@ std::optional<TypeId> TypeSimplifier::intersectWithSimpleDiscriminant(TypeId tar
         return arena->addType(IntersectionType{parts.take()});
     }
 
+    if (auto etv = get<ExternType>(target))
+    {
+        if (auto discTtv = get<TableType>(discriminant))
+        {
+            LUAU_ASSERT(discTtv->props.size() == 1 && !discTtv->indexer);
+            const auto discProp = begin(discTtv->props);
+
+            // This path is specifically for positive equality against a nominal
+            // extern identity. Other property refinements retain the prior behavior.
+            if (discProp->second.isReadOnly())
+            {
+                TypeId discriminantReadTy = unwrapSingletonDiscriminant(builtinTypes, *discProp->second.readTy);
+                if (get<ExternType>(discriminantReadTy))
+                {
+                    const Property* targetProp = lookupExternTypeProp(etv, discProp->first);
+                    if (!targetProp || !targetProp->isReadOnly())
+                        return target;
+
+                    TypeId targetReadTy = follow(*targetProp->readTy);
+
+                    // A base type or union can overlap the compared value without
+                    // identifying it, so only exact or disjoint nominal identities
+                    // can filter this arm.
+                    if (targetReadTy == target || !get<ExternType>(targetReadTy))
+                        return std::nullopt;
+
+                    if (targetReadTy == discriminantReadTy)
+                        return target;
+
+                    Relation relation = relate(targetReadTy, discriminantReadTy);
+                    if (relation == Relation::Disjoint)
+                        return builtinTypes->neverType;
+
+                    return std::nullopt;
+                }
+            }
+        }
+    }
+
     if (auto ttv = get<TableType>(target))
     {
         if (auto discTtv = get<TableType>(discriminant))
@@ -2019,9 +2070,9 @@ std::optional<TypeId> intersectWithSimpleDiscriminant(
     TypeId discriminant
 )
 {
-    if (!isSimpleDiscriminant(discriminant))
+    if (!isSimpleDiscriminant(builtinTypes, discriminant))
     {
-        if (isSimpleDiscriminant(target))
+        if (isSimpleDiscriminant(builtinTypes, target))
             return intersectWithSimpleDiscriminant(builtinTypes, arena, discriminant, target);
         return std::nullopt;
     }
