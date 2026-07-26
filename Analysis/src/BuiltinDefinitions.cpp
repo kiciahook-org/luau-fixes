@@ -11,6 +11,7 @@
 #include "Luau/Error.h"
 #include "Luau/Frontend.h"
 #include "Luau/Module.h"
+#include "Luau/Normalize.h"
 #include "Luau/NotNull.h"
 #include "Luau/Subtyping.h"
 #include "Luau/Symbol.h"
@@ -42,6 +43,18 @@ struct MagicSelect final : MagicFunction
         WithPredicate<TypePackId>
     ) override;
     bool infer(const MagicFunctionCallContext& context) override;
+};
+
+struct MagicRawget final : MagicFunction
+{
+    std::optional<WithPredicate<TypePackId>> handleOldSolver(
+        struct TypeChecker&,
+        const std::shared_ptr<struct Scope>&,
+        const class AstExprCall&,
+        WithPredicate<TypePackId>
+    ) override;
+    bool infer(const MagicFunctionCallContext& context) override;
+    bool typeCheck(const MagicFunctionTypeCheckContext& context) override;
 };
 
 struct MagicSetMetatable final : MagicFunction
@@ -458,6 +471,7 @@ void registerBuiltinGlobals(Frontend& frontend, GlobalTypes& globals, bool typeC
         // clang-format on
     }
 
+
     finalizeGlobalBindings(globals.globalScope);
 
     attachMagicFunction(getGlobalBinding(globals, "assert"), std::make_shared<MagicAssert>());
@@ -484,6 +498,7 @@ void registerBuiltinGlobals(Frontend& frontend, GlobalTypes& globals, bool typeC
 
     attachMagicFunction(getGlobalBinding(globals, "setmetatable"), std::make_shared<MagicSetMetatable>());
     attachMagicFunction(getGlobalBinding(globals, "select"), std::make_shared<MagicSelect>());
+    attachMagicFunction(getGlobalBinding(globals, "rawget"), std::make_shared<MagicRawget>());
 
     if (TableType* ttv = getMutable<TableType>(getGlobalBinding(globals, "table")))
     {
@@ -1268,6 +1283,62 @@ TypeId makeStringMetatable(NotNull<BuiltinTypes> builtinTypes, SolverMode mode)
         ttv->name = "typeof(string)";
 
     return arena->addType(TableType{{{{"__index", {tableType}}}}, std::nullopt, TypeLevel{}, TableState::Sealed});
+}
+
+static bool canUseRawgetLiteralMagic(Normalizer& normalizer, TypeId target)
+{
+    std::shared_ptr<const NormalizedType> normalized = normalizer.normalize(target);
+    if (!normalized)
+        return false;
+
+    if (normalized->hasTops())
+        return get<AnyType>(follow(normalized->tops)) != nullptr;
+
+    if (normalized->hasBooleans() || normalized->hasExternTypes() || normalized->hasNils() || normalized->hasNumbers() || normalized->hasIntegers() ||
+        normalized->hasStrings() || normalized->hasThreads() || normalized->hasBuffers() || normalized->hasFunctions() || normalized->hasTyvars())
+        return false;
+
+    return normalized->hasErrors() || normalized->hasTables();
+}
+
+std::optional<WithPredicate<TypePackId>> MagicRawget::handleOldSolver(TypeChecker&, const ScopePtr&, const AstExprCall&, WithPredicate<TypePackId>)
+{
+    return std::nullopt;
+}
+
+bool MagicRawget::infer(const MagicFunctionCallContext& context)
+{
+    if (context.callSite->args.size != 2)
+        return false;
+
+    const auto& [argumentTypes, argumentTail] = flatten(context.arguments);
+    if (argumentTypes.size() < 2)
+        return false;
+
+    AstExprConstantString* string = context.callSite->args.data[1]->as<AstExprConstantString>();
+    if (!string)
+        return false;
+
+    if (!canUseRawgetLiteralMagic(*context.solver->normalizer, argumentTypes[0]))
+        return false;
+
+    TypeId keyType = context.solver->arena->addType(SingletonType{StringSingleton{std::string{string->value.data, string->value.size}}});
+
+    TypeId resultType = context.solver->arena->addType(
+        TypeFunctionInstanceType{context.solver->builtinTypes->typeFunctions->rawgetFunc, {argumentTypes[0], keyType}}
+    );
+    TypePackId resultPack = context.solver->arena->addTypePack({resultType});
+    asMutable(context.result)->ty.emplace<BoundTypePack>(resultPack);
+    return true;
+}
+
+bool MagicRawget::typeCheck(const MagicFunctionTypeCheckContext& context)
+{
+    if (context.callSite->args.size != 2 || !context.callSite->args.data[1]->is<AstExprConstantString>())
+        return false;
+
+    const auto& [argumentTypes, argumentTail] = flatten(context.arguments);
+    return argumentTypes.size() >= 2 && canUseRawgetLiteralMagic(context.typechecker->normalizer, argumentTypes[0]);
 }
 
 std::optional<WithPredicate<TypePackId>> MagicSelect::handleOldSolver(

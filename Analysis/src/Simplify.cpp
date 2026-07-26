@@ -1909,8 +1909,6 @@ std::optional<TypeId> TypeSimplifier::intersectWithSimpleDiscriminant(TypeId tar
             LUAU_ASSERT(discTtv->props.size() == 1 && !discTtv->indexer);
             const auto discProp = begin(discTtv->props);
 
-            // This path is specifically for positive equality against a nominal
-            // extern identity. Other property refinements retain the prior behavior.
             if (discProp->second.isReadOnly())
             {
                 TypeId discriminantReadTy = unwrapSingletonDiscriminant(builtinTypes, *discProp->second.readTy);
@@ -1922,9 +1920,6 @@ std::optional<TypeId> TypeSimplifier::intersectWithSimpleDiscriminant(TypeId tar
 
                     TypeId targetReadTy = follow(*targetProp->readTy);
 
-                    // A base type or union can overlap the compared value without
-                    // identifying it, so only exact or disjoint nominal identities
-                    // can filter this arm.
                     if (targetReadTy == target || !get<ExternType>(targetReadTy))
                         return std::nullopt;
 

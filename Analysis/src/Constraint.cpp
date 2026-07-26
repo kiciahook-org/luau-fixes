@@ -6,6 +6,7 @@
 
 LUAU_FASTFLAGVARIABLE(LuauConstraintGraph)
 LUAU_FASTFLAG(LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
+LUAU_FASTFLAG(LuauHigherOrderGenericInference)
 
 namespace Luau
 {
@@ -146,7 +147,10 @@ std::pair<TypeIds, TypePackIds> Constraint::getMaybeMutatedTypes() const
         rci.traverse(fcc->argsPack);
         rci.traverseIntoTypeFunctions = true;
     }
-    else if (auto ptc = get<DEPRECATED_PrimitiveTypeConstraint>(*this); !FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier && ptc)
+    else if (
+        auto ptc = get<DEPRECATED_PrimitiveTypeConstraint>(*this);
+        !(FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier || FFlag::LuauHigherOrderGenericInference) && ptc
+    )
     {
         rci.traverse(ptc->freeType);
     }

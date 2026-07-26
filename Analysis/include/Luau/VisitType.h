@@ -11,6 +11,7 @@
 
 LUAU_FASTINT(LuauVisitRecursionLimit)
 LUAU_FASTFLAG(LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
+LUAU_FASTFLAG(LuauHigherOrderGenericInference)
 
 namespace Luau
 {
@@ -259,7 +260,7 @@ struct GenericTypeVisitor
                 traverse(ftv->lowerBound);
                 traverse(ftv->upperBound);
 
-                if (FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
+                if (FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier || FFlag::LuauHigherOrderGenericInference)
                 {
                     if (ftv->primitiveType)
                         traverse(*ftv->primitiveType);

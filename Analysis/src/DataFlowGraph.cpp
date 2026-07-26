@@ -998,8 +998,6 @@ DataFlowResult DataFlowGraphBuilder::visitExpr(AstExpr* e)
     };
 
     DataFlowResult result = go();
-    // Provenance must be rooted in a stable expression. A property reached
-    // through a dynamic subscript or call has no parent key to refine.
     if (!result.provenance && result.parent && result.parent->parent && result.parent->propName)
         result.provenance = result.parent;
     result.mutationGeneration = mutationGeneration;

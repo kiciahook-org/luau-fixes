@@ -3,6 +3,7 @@
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Common.h"
 
+#include "ClassFixture.h"
 #include "Fixture.h"
 
 #include "ScopedFlags.h"
@@ -362,6 +363,56 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "lua_51_exported_globals_all_exist")
 
     dumpErrors(result);
     LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "value_rawget_uses_raw_table_shape")
+{
+    if (FFlag::DebugLuauForceOldSolver)
+        return;
+
+    CheckResult result = check(R"(
+        type Record = {name: string, count: number}
+        local record: Record = {name = "item", count = 1}
+
+        local name: string = rawget(record, "name")
+        local missing: nil = rawget(record, "missing")
+
+        local values: {[string]: number} = {one = 1}
+        local key: string = "one"
+        local indexed: number? = rawget(values, key)
+
+        local object = setmetatable({own = 5}, {__index = {inherited = "value"}})
+        local own: number = rawget(object, "own")
+        local inherited: nil = rawget(object, "inherited")
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "value_rawget_rejects_non_tables")
+{
+    if (FFlag::DebugLuauForceOldSolver)
+        return;
+
+    CheckResult result = check(R"(
+        rawget(5, "field")
+        rawget("value", "field")
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(2, result);
+}
+
+TEST_CASE_FIXTURE(ExternTypeFixture, "value_rawget_rejects_extern_types")
+{
+    if (FFlag::DebugLuauForceOldSolver)
+        return;
+
+    CheckResult result = check(R"(
+        local object = BaseClass.New()
+        rawget(object, "BaseField")
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "setmetatable_unpacks_arg_types_correctly")

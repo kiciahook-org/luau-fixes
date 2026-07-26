@@ -48,6 +48,7 @@ LUAU_FASTFLAGVARIABLE(LuauTidyTypePrototyping)
 LUAU_FASTFLAG(LuauConstraintGraph)
 LUAU_FASTFLAGVARIABLE(LuauDoNotEmplaceAnnotatedType)
 LUAU_FASTFLAGVARIABLE(LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
+LUAU_FASTFLAG(LuauHigherOrderGenericInference)
 LUAU_FASTFLAGVARIABLE(LuauDeprecatedAttributeOnAnonymousFunctions)
 LUAU_FASTFLAGVARIABLE(DebugLuauCFG)
 
@@ -2212,9 +2213,6 @@ ControlFlow ConstraintGenerator::visit(const ScopePtr& scope, AstStatIf* ifState
             }
         }
 
-        // If one branch assigns to a local, the post-if phi combines that new definition with the
-        // incoming definition from the other branch. Preserve the other branch's refinement for
-        // that incoming definition; using its declared type would discard what the condition proved.
         struct LocalWriteFinder : AstVisitor
         {
             AstLocal* local;
@@ -2263,8 +2261,6 @@ ControlFlow ConstraintGenerator::visit(const ScopePtr& scope, AstStatIf* ifState
             return writes.found;
         };
 
-        // Select the final unconditional assignment in the branch block. Nested or later writes can
-        // leave a different version at the branch exit, so they conservatively disqualify the join.
         auto findDominatingTopLevelAssignment = [](AstStat* branch, AstLocal* local) -> AstExprLocal*
         {
             AstStatBlock* block = branch ? branch->as<AstStatBlock>() : nullptr;
@@ -3410,7 +3406,7 @@ Inference ConstraintGenerator::check(const ScopePtr& scope, AstExprConstantStrin
     LUAU_ASSERT(ft);
     ft->lowerBound = arena->addType(SingletonType{StringSingleton{std::string{string->value.data, string->value.size}}});
     ft->upperBound = builtinTypes->stringType;
-    if (FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
+    if (FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier || FFlag::LuauHigherOrderGenericInference)
     {
         ft->primitiveType = builtinTypes->stringType;
         if (expectedType)
@@ -3448,7 +3444,7 @@ Inference ConstraintGenerator::check(const ScopePtr& scope, AstExprConstantBool*
     LUAU_ASSERT(ft);
     ft->lowerBound = singletonType;
     ft->upperBound = builtinTypes->booleanType;
-    if (FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
+    if (FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier || FFlag::LuauHigherOrderGenericInference)
     {
         ft->primitiveType = builtinTypes->booleanType;
         if (expectedType)

@@ -1629,8 +1629,6 @@ SubtypingResult Subtyping::isCovariantWith(SubtypingEnvironment& env, TypeId sub
 
     SubtypingResult result{false};
 
-    // Prefer an exact union arm before attempting to bind a generic arm. This
-    // keeps a shared component such as nil in T? <: U? from constraining U.
     for (TypeId ty : superUnion)
     {
         if (follow(ty) == subTy)

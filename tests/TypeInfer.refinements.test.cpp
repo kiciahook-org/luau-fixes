@@ -2223,7 +2223,6 @@ TEST_CASE_FIXTURE(Fixture, "property_discriminant_alias_provenance_respects_comp
 
     LUAU_REQUIRE_NO_ERRORS(result);
     CHECK_EQ("A", toString(requireTypeAtPosition({8, 48})));
-    // Both paths carry the property proof; collapsing this structural refinement to A is outside this regression's scope.
     CHECK_EQ(R"((A & { read kind: "a" | "a" }) | (B & { read kind: "a" | "a" }))", toString(requireTypeAtPosition({15, 51})));
     CHECK_EQ("A | B", toString(requireTypeAtPosition({22, 39})));
     CHECK_EQ("A | B", toString(requireTypeAtPosition({29, 45})));
@@ -4011,6 +4010,43 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "property_refined_metatable_preserves_writabl
     LUAU_REQUIRE_ERROR_COUNT(2, invalidWrites);
     CHECK(get<TypeMismatch>(invalidWrites.errors[0]));
     CHECK(get<TypeMismatch>(invalidWrites.errors[1]));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "property_refined_metatable_preserves_sibling_reads_and_methods")
+{
+    ScopedFastFlag solverFlag{FFlag::DebugLuauForceOldSolver, false};
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        --!strict
+
+        local Child = {}
+        Child.__index = Child
+        type Child = setmetatable<{ value: number }, typeof(Child)>
+
+        function Child.new(_sibling: number): Child
+            return setmetatable({ value = 1 }, Child)
+        end
+
+        local Class = {}
+        Class.__index = Class
+
+        type ClassData = {
+            optional: Child?,
+            sibling: number,
+        }
+        type Class = setmetatable<ClassData, typeof(Class)>
+
+        function Class.method(self: Class): number
+            return self.sibling
+        end
+
+        local function update(self: Class)
+            if self.optional == nil then
+                local child = Child.new(self.sibling + self:method())
+                self.optional = child
+            end
+        end
+    )"));
 }
 
 TEST_CASE_FIXTURE(Fixture, "post_if_phi_preserves_the_refined_incoming_discriminated_arm")

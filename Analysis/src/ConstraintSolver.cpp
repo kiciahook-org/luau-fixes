@@ -53,6 +53,7 @@ LUAU_FASTFLAGVARIABLE(LuauAvoidCascadingRecursiveConstraintViolationError)
 LUAU_FASTFLAGVARIABLE(LuauFixInfiniteTypeRedundantBind)
 LUAU_FASTFLAG(LuauBidirectionalInferenceVariadics)
 LUAU_FASTFLAG(LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
+LUAU_FASTFLAG(LuauHigherOrderGenericInference)
 LUAU_FASTFLAGVARIABLE(LuauRemoveExtraSubtypingInstances)
 LUAU_FASTFLAGVARIABLE(LuauIndexingIntoErrorGivesError)
 
@@ -932,8 +933,7 @@ void ConstraintSolver::generalizeOneType(TypeId ty)
     // concrete. If so, our work is already done.
     if (!freeTy)
         return;
-
-    if (FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
+    if (FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier || FFlag::LuauHigherOrderGenericInference)
     {
         if (auto bindTo = resolvePrimitiveLiteral(*freeTy); bindTo && ty != *bindTo)
         {
@@ -1070,7 +1070,10 @@ bool ConstraintSolver::tryDispatch(NotNull<const Constraint> constraint, bool fo
         success = tryDispatch(*fcc, constraint, force);
     else if (auto fcc = get<FunctionCheckConstraint>(*constraint))
         success = tryDispatch(*fcc, constraint, force);
-    else if (auto fcc = get<DEPRECATED_PrimitiveTypeConstraint>(*constraint); !FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier && fcc)
+    else if (
+        auto fcc = get<DEPRECATED_PrimitiveTypeConstraint>(*constraint);
+        !(FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier || FFlag::LuauHigherOrderGenericInference) && fcc
+    )
     {
         success = DEPRECATED_tryDispatch(*fcc, constraint);
     }
@@ -2078,7 +2081,7 @@ bool ConstraintSolver::tryDispatch(const FunctionCheckConstraint& c, NotNull<con
 
 bool ConstraintSolver::DEPRECATED_tryDispatch(const DEPRECATED_PrimitiveTypeConstraint& c, NotNull<const Constraint> constraint)
 {
-    LUAU_ASSERT(!FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier);
+    LUAU_ASSERT(!(FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier || FFlag::LuauHigherOrderGenericInference));
     std::optional<TypeId> expectedType = c.expectedType ? std::make_optional<TypeId>(follow(*c.expectedType)) : std::nullopt;
     if (expectedType && (isBlocked(*expectedType) || get<PendingExpansionType>(*expectedType)))
         return block(*expectedType, constraint);
@@ -3911,7 +3914,7 @@ bool ConstraintSolver::unify(NotNull<const Constraint> constraint, TID subTy, TI
 {
     static_assert(std::is_same_v<TID, TypeId> || std::is_same_v<TID, TypePackId>);
 
-    if (FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
+    if (FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier || FFlag::LuauHigherOrderGenericInference)
     {
         Unifier2 u2{arena, builtinTypes, constraint->scope, NotNull{&iceReporter}, &uninhabitedTypeFunctions};
         auto result = u2.unify(subTy, superTy);

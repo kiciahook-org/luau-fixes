@@ -2926,6 +2926,57 @@ TEST_CASE_FIXTURE(Fixture, "unifier_should_not_bind_free_types")
     }
 }
 
+TEST_CASE_FIXTURE(BuiltinsFixture, "union_callback_subtyping_preserves_later_method_types")
+{
+    ScopedFastFlag sffs[] = {
+        {FFlag::LuauHigherOrderGenericInference, true},
+        {FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier, false},
+    };
+
+    CheckResult result = check(R"(
+        --!strict
+        type LocalState = { kind: "local", Player: number }
+        type RemoteState = { kind: "remote", Player: number }
+        type FighterLike = LocalState | RemoteState
+
+        type Decorator = { ApplyAsync: (self: Decorator) -> () }
+        type Factory = (number) -> Decorator
+        type Tracker = { Add: <T>(self: Tracker, value: T) -> T }
+
+        local function observe(onLocal: (LocalState) -> (), onRemote: (RemoteState) -> ())
+        end
+
+        local Owner = {}
+        Owner.__index = Owner
+        type OwnerData = { tracker: Tracker, factory: Factory? }
+        type Owner = setmetatable<OwnerData, typeof(Owner)>
+
+        function Owner.new(): Owner
+            local self: OwnerData = { tracker = nil :: any, factory = nil }
+            setmetatable(self, Owner)
+            local function onAdded(state: FighterLike)
+                self:bind(state)
+            end
+            observe(onAdded, onAdded)
+            return self
+        end
+
+        function Owner.bind(self: Owner, fighter: FighterLike)
+            local factory = self.factory
+            if factory == nil then
+                return
+            end
+
+            local decorator = self.tracker:Add(factory(fighter.Player))
+            decorator:ApplyAsync()
+        end
+
+        return Owner
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
 TEST_CASE_FIXTURE(Fixture, "captured_local_is_assigned_a_function")
 {
     CheckResult result = check(R"(

@@ -41,8 +41,10 @@ struct TypeFunctionFixture : Fixture
                              {
                                  return TypeFunctionReductionResult<TypeId>{ctx->builtins->stringType, Reduction::MaybeOk, {}, {}};
                              }
-                             else if (is<BlockedType>(param) || is<PendingExpansionType>(param) || is<TypeFunctionInstanceType>(param) ||
-                                      (ctx->solver && ctx->solver->hasUnresolvedConstraints(param)))
+                             else if (
+                                 is<BlockedType>(param) || is<PendingExpansionType>(param) || is<TypeFunctionInstanceType>(param) ||
+                                 (ctx->solver && ctx->solver->hasUnresolvedConstraints(param))
+                             )
                              {
                                  return TypeFunctionReductionResult<TypeId>{std::nullopt, Reduction::MaybeOk, {param}, {}};
                              }
@@ -1302,6 +1304,24 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "rawget_type_function_works_w_array")
     )");
 
     LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "rawget_type_function_covers_broad_keys")
+{
+    if (FFlag::DebugLuauForceOldSolver)
+        return;
+
+    CheckResult result = check(R"(
+        type MyObject = {a: string, b: number, c: boolean}
+        type BroadProperties = rawget<MyObject, string>
+        type PartialIndexer = rawget<{["a" | "b"]: number}, string>
+        type FullIndexer = rawget<{[string]: number}, string>
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK_EQ("(boolean | number | string)?", toString(requireTypeAlias("BroadProperties")));
+    CHECK_EQ("number?", toString(requireTypeAlias("PartialIndexer")));
+    CHECK_EQ("number", toString(requireTypeAlias("FullIndexer")));
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "rawget_type_function_errors_w_var_indexer")

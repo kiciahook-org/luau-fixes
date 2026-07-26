@@ -3830,11 +3830,16 @@ PropertyType TypeChecker2::hasIndexTypeFromType(
 
         return {NormalizationResult::False, {builtinTypes->unknownType}};
     }
-    else if (const MetatableType* mt = get<MetatableType>(ty); mt && context == ValueContext::LValue)
+    else if (const MetatableType* mt = get<MetatableType>(ty))
     {
-        // Property refinements can leave a metatable's table component as an
-        // intersection. Writes still target the original table capability.
-        return hasIndexTypeFromType(mt->table, prop, context, location, seen, astIndexExprType, errors);
+        PropertyType result = hasIndexTypeFromType(mt->table, prop, context, location, seen, astIndexExprType, errors);
+        if (result.present != NormalizationResult::False || context == ValueContext::LValue)
+            return result;
+
+        if (auto resTy = findTablePropertyRespectingMeta(builtinTypes, errors, ty, prop, context, location, /* useNewSolver */ true))
+            return {NormalizationResult::True, resTy};
+
+        return result;
     }
     else if (const ExternType* cls = get<ExternType>(ty))
     {

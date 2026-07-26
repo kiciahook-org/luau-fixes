@@ -23,6 +23,7 @@ LUAU_DYNAMIC_FASTINTVARIABLE(LuauStepRefineRecursionLimit, 64)
 LUAU_FASTFLAGVARIABLE(LuauConcatDoesntAlwaysReturnString)
 LUAU_FASTFLAG(DebugLuauUserDefinedClasses)
 LUAU_FASTFLAG(LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
+LUAU_FASTFLAG(LuauHigherOrderGenericInference)
 LUAU_FASTFLAG(LuauRemoveExtraSubtypingInstances)
 
 namespace Luau
@@ -1298,8 +1299,6 @@ TypeFunctionReductionResult<TypeId> refineTypeFunction(
                                                           }
                                                       ))
     {
-        // Property refinements constrain the table component of a metatable type. Traversing the recursive
-        // metatable component here can create a dependency cycle with methods that are still being inferred.
         blockerTarget = mt->table;
     }
     frb.traverse(blockerTarget);
@@ -1485,9 +1484,6 @@ TypeFunctionReductionResult<TypeId> singletonTypeFunction(
     if (auto negation = get<NegationType>(followed))
         followed = follow(negation->ty);
 
-    // Extern types are nominally disjoint, so a positive equality refinement can
-    // safely preserve one as an identity discriminant. Do not do this through a
-    // negation: two distinct values of the same extern type may compare unequal.
     if (!get<NegationType>(type) && get<ExternType>(followed))
         return {type, Reduction::MaybeOk, {}, {}};
 
@@ -1946,76 +1942,86 @@ TypeFunctionReductionResult<TypeId> rawkeyofTypeFunction(
 /* Searches through table's or class's props/indexer to find the property of `ty`
    If found, appends that property to `result` and returns true
    Else, returns false */
+bool addPropertyType(const Property& prop, DenseHashSet<TypeId>& result)
+{
+    TypeId propTy;
+    if (prop.readTy)
+        propTy = follow(*prop.readTy);
+    else if (prop.writeTy)
+        propTy = follow(*prop.writeTy);
+    else
+        return false;
+
+    if (const UnionType* propUnionTy = get<UnionType>(propTy))
+    {
+        for (TypeId option : propUnionTy)
+            result.insert(follow(option));
+    }
+    else
+        result.insert(propTy);
+
+    return true;
+}
+
 bool searchPropsAndIndexer(
     TypeId ty,
-    TableType::Props tblProps,
-    std::optional<TableIndexer> tblIndexer,
+    const TableType::Props& tblProps,
+    const std::optional<TableIndexer>& tblIndexer,
     DenseHashSet<TypeId>& result,
-    NotNull<TypeFunctionContext> ctx
+    NotNull<TypeFunctionContext> ctx,
+    bool isRaw
 )
 {
     ty = follow(ty);
 
-    // index into tbl's properties
-    if (auto stringSingleton = get<StringSingleton>(get<SingletonType>(ty)))
+    if (const StringSingleton* stringSingleton = get<StringSingleton>(get<SingletonType>(ty)))
     {
-        if (tblProps.find(stringSingleton->value) != tblProps.end())
-        {
-
-            Property& prop = tblProps.at(stringSingleton->value);
-
-            TypeId propTy;
-            if (prop.readTy)
-                propTy = follow(*prop.readTy);
-            else if (prop.writeTy)
-                propTy = follow(*prop.writeTy);
-            else // found the property, but there was no type associated with it
-                return false;
-
-            // property is a union type -> we need to extend our reduction type
-            if (auto propUnionTy = get<UnionType>(propTy))
-            {
-                for (TypeId option : propUnionTy->options)
-                {
-                    result.insert(follow(option));
-                }
-            }
-            else // property is a singular type or intersection type -> we can simply append
-                result.insert(propTy);
-
+        if (auto prop = tblProps.find(stringSingleton->value); prop != tblProps.end() && addPropertyType(prop->second, result))
             return true;
+    }
+
+    if (isRaw)
+    {
+        for (const auto& [name, prop] : tblProps)
+        {
+            TypeId propNameTy = ctx->arena->addType(SingletonType{StringSingleton{name}});
+            if (isSubtype(propNameTy, ty, ctx->arena, ctx->builtins, ctx->scope, ctx->normalizer, ctx->typeFunctionRuntime, ctx->ice))
+                addPropertyType(prop, result);
         }
     }
 
-    // index into tbl's indexer
     if (tblIndexer)
     {
         TypeId indexType = follow(tblIndexer->indexType);
 
-        if (auto tfit = get<TypeFunctionInstanceType>(indexType))
+        if (const TypeFunctionInstanceType* tfit = get<TypeFunctionInstanceType>(indexType))
         {
             // if we have an index function here, it means we're in a cycle, so let's see if it's well-founded if we tie the knot
             if (tfit->function.get() == &ctx->builtins->typeFunctions->indexFunc)
                 indexType = follow(tblIndexer->indexResultType);
         }
 
-        if (isSubtype(ty, indexType, ctx->arena, ctx->builtins, ctx->scope, ctx->normalizer, ctx->typeFunctionRuntime, ctx->ice))
+        const bool fullyCovered =
+            isSubtype(ty, indexType, ctx->arena, ctx->builtins, ctx->scope, ctx->normalizer, ctx->typeFunctionRuntime, ctx->ice);
+        bool overlaps = fullyCovered;
+
+        if (isRaw && !overlaps)
         {
-            TypeId idxResultTy = follow(tblIndexer->indexResultType);
+            overlaps = isSubtype(indexType, ty, ctx->arena, ctx->builtins, ctx->scope, ctx->normalizer, ctx->typeFunctionRuntime, ctx->ice);
 
-            // indexResultType is a union type -> we need to extend our reduction type
-            if (auto idxResUnionTy = get<UnionType>(idxResultTy))
+            if (!overlaps)
             {
-                for (TypeId option : idxResUnionTy->options)
-                {
-                    result.insert(follow(option));
-                }
+                TypeId intersectionTy = ctx->arena->addType(IntersectionType{{ty, indexType}});
+                std::shared_ptr<const NormalizedType> intersectionNorm = ctx->normalizer->normalize(intersectionTy);
+                overlaps = !intersectionNorm || ctx->normalizer->isInhabited(intersectionNorm.get()) != NormalizationResult::False;
             }
-            else // indexResultType is a singular type or intersection type -> we can simply append
-                result.insert(idxResultTy);
-
-            return true;
         }
+
+        if (overlaps)
+            addPropertyType(Property::readonly(tblIndexer->indexResultType), result);
+
+        if (fullyCovered)
+            return true;
     }
 
     return false;
@@ -2072,7 +2078,7 @@ bool tblIndexInto(
     // we have a table type to try indexing
     if (auto tableTy = get<TableType>(indexee))
     {
-        return searchPropsAndIndexer(indexer, tableTy->props, tableTy->indexer, result, ctx);
+        return searchPropsAndIndexer(indexer, tableTy->props, tableTy->indexer, result, ctx, isRaw);
     }
 
     // we have a metatable type to try indexing
@@ -2082,7 +2088,7 @@ bool tblIndexInto(
         {
 
             // try finding all properties within the current scope of the table
-            if (searchPropsAndIndexer(indexer, tableTy->props, tableTy->indexer, result, ctx))
+            if (searchPropsAndIndexer(indexer, tableTy->props, tableTy->indexer, result, ctx, isRaw))
                 return true;
         }
 
@@ -2188,7 +2194,7 @@ TypeFunctionReductionResult<TypeId> indexFunctionImpl(
             for (TypeId ty : *typesToFind)
             {
                 // Search for all instances of indexer in class->props and class->indexer
-                if (searchPropsAndIndexer(ty, externTy->props, externTy->indexer, properties, ctx))
+                if (searchPropsAndIndexer(ty, externTy->props, externTy->indexer, properties, ctx, isRaw))
                     continue; // Indexer was found in this class, so we can move on to the next
 
                 auto parent = externTy->parent;
@@ -2196,7 +2202,7 @@ TypeFunctionReductionResult<TypeId> indexFunctionImpl(
                 while (parent && !foundInParent)
                 {
                     auto parentExternType = get<ExternType>(follow(*parent));
-                    foundInParent = searchPropsAndIndexer(ty, parentExternType->props, parentExternType->indexer, properties, ctx);
+                    foundInParent = searchPropsAndIndexer(ty, parentExternType->props, parentExternType->indexer, properties, ctx, isRaw);
                     parent = parentExternType->parent;
                 }
 
@@ -2294,7 +2300,7 @@ TypeFunctionReductionResult<TypeId> setmetatableTypeFunction(
     TypeId targetTy = follow(typeParams.at(0));
     TypeId metatableTy = follow(typeParams.at(1));
 
-    if (FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
+    if (FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier || FFlag::LuauHigherOrderGenericInference)
     {
         // Having the target type be a pending table does not block dispatch.
         if (isPending(targetTy, ctx->solver) && !is<TableType>(targetTy))
@@ -2323,7 +2329,7 @@ TypeFunctionReductionResult<TypeId> setmetatableTypeFunction(
         targetNorm->hasExternTypes())
         return {std::nullopt, Reduction::Erroneous, {}, {}};
 
-    if (FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
+    if (FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier || FFlag::LuauHigherOrderGenericInference)
     {
         // Having the metatable type be a pending table does not block dispatch.
         if (isPending(metatableTy, ctx->solver) && !is<TableType>(metatableTy))
