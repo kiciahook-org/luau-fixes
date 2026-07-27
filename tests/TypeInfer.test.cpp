@@ -1874,6 +1874,19 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "getmetatable_infer_any_ret")
     CHECK_EQ("(any) -> any", toString(requireType("spooky")));
 }
 
+TEST_CASE_FIXTURE(BuiltinsFixture, "getmetatable_accepts_refined_any")
+{
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        local function getNonNilMetatable(value: any)
+            if value == nil then
+                return nil
+            end
+
+            return getmetatable(value)
+        end
+    )"));
+}
+
 TEST_CASE_FIXTURE(BuiltinsFixture, "getmetatable_infer_any_param")
 {
     auto result = check(R"(

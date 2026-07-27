@@ -2497,6 +2497,13 @@ TypeFunctionReductionResult<TypeId> getmetatableTypeFunction(
     if (isPending(targetTy, ctx->solver))
         return {std::nullopt, Reduction::MaybeOk, {targetTy}, {}};
 
+    std::shared_ptr<const NormalizedType> targetNorm = ctx->normalizer->normalize(targetTy);
+    if (!targetNorm)
+        return {std::nullopt, Reduction::MaybeOk, {}, {}};
+
+    if (targetNorm->shouldSuppressErrors())
+        return {ctx->builtins->anyType, Reduction::MaybeOk, {}, {}};
+
     if (auto ut = get<UnionType>(targetTy))
     {
         std::vector<TypeId> options{};
