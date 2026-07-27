@@ -1311,6 +1311,8 @@ TypeFunctionReductionResult<TypeId> refineTypeFunction(
     // Returns result : TypeId, toBlockOn : vector<TypeId>
     auto stepRefine = [&stepRefineCount, &ctx](TypeId target, TypeId discriminant) -> std::pair<TypeId, std::vector<TypeId>>
     {
+        target = follow(target);
+        discriminant = follow(discriminant);
         RecursionLimiter rl{"BuiltInTypeFunctions::stepRefine", &stepRefineCount, DFInt::LuauStepRefineRecursionLimit};
 
         std::vector<TypeId> toBlock;
@@ -1323,7 +1325,7 @@ TypeFunctionReductionResult<TypeId> refineTypeFunction(
 
         const MetatableType* mt = get<MetatableType>(target);
         const bool refineTableComponent = mt && is<TableType>(follow(discriminant));
-        TypeId refinementTarget = refineTableComponent ? mt->table : target;
+        TypeId refinementTarget = follow(refineTableComponent ? mt->table : target);
         auto restoreMetatable = [ctx, mt, refineTableComponent](TypeId refined)
         {
             if (!refineTableComponent || is<NeverType>(follow(refined)))

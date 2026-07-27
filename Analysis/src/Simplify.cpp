@@ -1711,12 +1711,13 @@ namespace
 
 TypeId unwrapSingletonDiscriminant(NotNull<BuiltinTypes> builtinTypes, TypeId ty)
 {
+    ty = follow(ty);
     if (auto instance = get<TypeFunctionInstanceType>(ty);
         instance && !instance->userFuncName && instance->function->name == builtinTypes->typeFunctions->singletonFunc.name &&
         instance->typeArguments.size() == 1 && instance->packArguments.empty() && get<ExternType>(follow(instance->typeArguments.front())))
         return follow(instance->typeArguments.front());
 
-    return follow(ty);
+    return ty;
 }
 
 bool isSimpleDiscriminant(NotNull<BuiltinTypes> builtinTypes, TypeId ty, DenseHashSet<TypeId>& seen)

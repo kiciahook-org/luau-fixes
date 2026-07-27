@@ -1080,14 +1080,12 @@ void TypeChecker2::visit(AstStatForIn* forInStatement)
     }
     else if (const TableType* ttv = get<TableType>(iteratorTy))
     {
-        if ((forInStatement->vars.size == 1 || forInStatement->vars.size == 2) && ttv->indexer)
+        if (ttv->indexer)
         {
             testIsSubtype(variableTypes[0], ttv->indexer->indexType, forInStatement->vars.data[0]->location);
-            if (variableTypes.size() == 2)
+            if (variableTypes.size() >= 2)
                 testIsSubtype(variableTypes[1], ttv->indexer->indexResultType, forInStatement->vars.data[1]->location);
         }
-        else
-            reportError(GenericError{"Cannot iterate over a table without indexer"}, forInStatement->values.data[0]->location);
     }
     else if (get<AnyType>(iteratorTy) || get<ErrorType>(iteratorTy) || get<NeverType>(iteratorTy))
     {
@@ -1601,21 +1599,29 @@ void TypeChecker2::visitCall(AstExprCall* call)
 
     if (selectedOverloadTy)
     {
-        SubtypingResult result = subtyping->isSubtype(*originalCallTy, *selectedOverloadTy, scope);
-        if (result.isSubtype)
+        const FunctionType* originalFn = get<FunctionType>(follow(*originalCallTy));
+        if (originalFn && (!originalFn->generics.empty() || !originalFn->genericPacks.empty()))
+        {
             fnTy = follow(*selectedOverloadTy);
-
-        if (result.isErrorSuppressing)
-        {
-            for (auto& e : result.errors)
-                e.location = call->location;
         }
-
-        reportErrors(std::move(result.errors));
-        if (result.normalizationTooComplex)
+        else
         {
-            reportError(NormalizationTooComplex{}, call->func->location);
-            return;
+            SubtypingResult result = subtyping->isSubtype(*originalCallTy, *selectedOverloadTy, scope);
+            if (result.isSubtype)
+                fnTy = follow(*selectedOverloadTy);
+
+            if (result.isErrorSuppressing)
+            {
+                for (auto& e : result.errors)
+                    e.location = call->location;
+            }
+
+            reportErrors(std::move(result.errors));
+            if (result.normalizationTooComplex)
+            {
+                reportError(NormalizationTooComplex{}, call->func->location);
+                return;
+            }
         }
     }
 

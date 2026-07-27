@@ -130,6 +130,15 @@ TEST_CASE_FIXTURE(SimplifyFixture, "overload_negation_refinement_is_never")
     CHECK(neverTy == intersect(intersection, negationT));
 }
 
+TEST_CASE_FIXTURE(SimplifyFixture, "simple_discriminant_follows_bound_types")
+{
+    TypeId boundSingleton = arena->addType(BoundType{helloTy});
+    std::optional<TypeId> result = intersectWithSimpleDiscriminant(getBuiltins(), arena, stringTy, boundSingleton);
+
+    REQUIRE(result);
+    CHECK(helloTy == *result);
+}
+
 TEST_CASE_FIXTURE(SimplifyFixture, "unknown_and_other_tops_and_bottom_types")
 {
 

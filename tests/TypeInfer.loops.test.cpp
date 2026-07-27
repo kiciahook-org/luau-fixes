@@ -1134,8 +1134,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "dcr_iteration_on_never_gives_never")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "iterate_over_properties")
 {
-    // CLI-116498 - Sometimes you can iterate over tables with no indexer.
-    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     CheckResult result = check(R"(
         local function f()
@@ -1152,8 +1150,28 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "iterate_over_properties")
 
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    CHECK_EQ("unknown", toString(requireType("k")));
-    CHECK_EQ("unknown", toString(requireType("v")));
+    CHECK_EQ("\"p\" | \"q\"", toString(requireType("k")));
+    CHECK_EQ("number | string", toString(requireType("v")));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "iterate_over_record_from_array")
+{
+    CheckResult result = check(R"(
+        local settings = {
+            Alpha = 5,
+            Beta = "hello",
+        }
+        local groups = { settings }
+        local defaults: { [string]: any } = {}
+
+        for _, group in groups do
+            for key, value in group do
+                defaults[key] = value
+            end
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "iterate_over_properties_nonstrict")

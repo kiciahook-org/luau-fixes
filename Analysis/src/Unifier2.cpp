@@ -226,10 +226,10 @@ UnifyResult Unifier2::unify_(TypeId subTy, TypeId superTy)
 
     auto subIntersection = get<IntersectionType>(subTy);
     auto superIntersection = get<IntersectionType>(superTy);
-    if (subIntersection)
-        return unify_(subIntersection, superTy);
-    else if (superIntersection)
+    if (superIntersection)
         return unify_(subTy, superIntersection);
+    else if (subIntersection)
+        return unify_(subIntersection, superTy);
 
     auto subNever = get<NeverType>(subTy);
     auto superNever = get<NeverType>(superTy);

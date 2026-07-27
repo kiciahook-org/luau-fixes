@@ -3626,7 +3626,33 @@ bool ConstraintSolver::tryDispatchIterableTable(TypeId iteratorTy, const Iterabl
             }
         }
         else
-            unpack(builtinTypes->errorType);
+        {
+            TypeId keyType = builtinTypes->neverType;
+            TypeId valueType = builtinTypes->neverType;
+
+            for (const auto& [name, property] : iteratorTable->props)
+            {
+                TypeId nameType = arena->addType(SingletonType{StringSingleton{name}});
+                keyType = simplifyUnion(constraint->scope, constraint->location, keyType, nameType);
+                valueType = simplifyUnion(constraint->scope, constraint->location, valueType, property.readTy.value_or(builtinTypes->unknownType));
+            }
+
+            if (iteratorTable->props.empty())
+            {
+                keyType = builtinTypes->unknownType;
+                valueType = builtinTypes->unknownType;
+            }
+
+            std::vector<TypeId> expectedVariables{keyType, valueType};
+            while (expectedVariables.size() < c.variables.size())
+                expectedVariables.push_back(builtinTypes->nilType);
+
+            for (size_t i = 0; i < c.variables.size(); ++i)
+            {
+                unify(constraint, c.variables[i], expectedVariables[i]);
+                bind(constraint, c.variables[i], expectedVariables[i]);
+            }
+        }
     }
     else if (std::optional<TypeId> iterFn = findMetatableEntry(builtinTypes, errors, iteratorTy, "__iter", Location{}))
     {

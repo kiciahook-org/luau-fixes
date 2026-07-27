@@ -1833,6 +1833,28 @@ TEST_CASE_FIXTURE(TFFixture, "refine<G, ~(false?)>")
     CHECK(res.blockedTypes.size() == 0);
 }
 
+TEST_CASE_FIXTURE(TFFixture, "refine_follows_bound_metatable_table_component")
+{
+    TableType::Props targetProps;
+    targetProps["x"] = Property::rw(builtinTypes_.numberType);
+    targetProps["y"] = Property::rw(builtinTypes_.stringType);
+    TypeId targetTable = arena->addType(TableType{targetProps, {}, TypeLevel{}, TableState::Sealed});
+    TypeId boundTargetTable = arena->addType(BoundType{targetTable});
+    TypeId target = arena->addType(MetatableType{boundTargetTable, builtinTypes_.tableType});
+
+    TableType::Props discriminantProps;
+    discriminantProps["x"] = Property::readonly(builtinTypes_.numberType);
+    discriminantProps["y"] = Property::readonly(builtinTypes_.stringType);
+    TypeId discriminant = arena->addType(TableType{discriminantProps, {}, TypeLevel{}, TableState::Sealed});
+
+    TypeId refinement = arena->addType(TypeFunctionInstanceType{getBuiltinTypeFunctions()->refineFunc, {target, discriminant}});
+    FunctionGraphReductionResult result = reduceTypeFunctions(refinement, Location{}, tfc, true);
+
+    CHECK(result.errors.empty());
+    CHECK(result.blockedTypes.empty());
+    CHECK(!result.reducedTypes.empty());
+}
+
 TEST_CASE_FIXTURE(TFFixture, "or<'a, 'b>")
 {
     TypeId aType = arena->freshType(getBuiltins(), globalScope.get());

@@ -7,6 +7,8 @@
 
 #include "doctest.h"
 
+#include <string>
+
 using namespace Luau;
 
 LUAU_FASTFLAG(LuauBidirectionalInferenceSimplifyTables)
@@ -309,6 +311,80 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "generic_call_preserves_optional_properties_f
     )");
 
     LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "generic_property_access_preserves_intersection_instances_from_definition_types")
+{
+    loadDefinition(R"(
+        declare extern type Instance with
+        end
+
+        declare extern type DataModel extends Instance with
+            JobId: string
+        end
+
+        declare extern type Player extends Instance with
+            UserId: number
+            CharacterAppearanceId: number
+        end
+
+        type ExtraDataModel = {
+            HttpGet: (ExtraDataModel, string) -> string,
+        }
+
+        declare game: DataModel & ExtraDataModel
+        declare player: Player
+        declare function getInstanceProperty<T, K>(instance: T & Instance, key: K & keyof<T>): index<T, K>
+    )");
+
+    CheckResult result = check(R"(
+        local userId = getInstanceProperty(player, "UserId")
+        local jobId = getInstanceProperty(game, "JobId")
+
+        if userId ~= (getInstanceProperty :: (Player, string) -> number)(player, "userId") then
+            error("user id mismatch")
+        end
+
+        local characterAppearanceId = getInstanceProperty(player, "CharacterAppearanceId")
+        if characterAppearanceId ~= (getInstanceProperty :: (Player, string) -> number)(player, "characterAppearanceId") then
+            error("appearance id mismatch")
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK_EQ("number", toString(requireType("userId")));
+    CHECK_EQ("string", toString(requireType("jobId")));
+    CHECK_EQ("number", toString(requireType("characterAppearanceId")));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "generic_property_access_scales_to_large_extern_types")
+{
+    std::string definitions = R"(
+        declare extern type Instance with
+        end
+
+        declare extern type Player extends Instance with
+    )";
+
+    for (size_t i = 0; i < 512; ++i)
+        definitions += "Property" + std::to_string(i) + ": number\n";
+
+    definitions += R"(
+            CharacterAppearanceId: number
+        end
+
+        declare player: Player
+        declare function getInstanceProperty<T, K>(instance: T & Instance, key: K & keyof<T>): index<T, K>
+    )";
+
+    loadDefinition(definitions);
+
+    CheckResult result = check(R"(
+        local characterAppearanceId = getInstanceProperty(player, "CharacterAppearanceId")
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK_EQ("number", toString(requireType("characterAppearanceId")));
 }
 
 TEST_CASE_FIXTURE(Fixture, "class_definition_function_prop")
