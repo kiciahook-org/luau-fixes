@@ -362,6 +362,22 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "keyof_type_function_works")
     CHECK_EQ("\"x\" | \"y\" | \"z\"", toString(tm->givenType));
 }
 
+TEST_CASE_FIXTURE(BuiltinsFixture, "persistent_keyof_function_parameter_uses_mapped_generic")
+{
+    if (FFlag::DebugLuauForceOldSolver)
+        return;
+
+    loadDefinition(R"(
+        declare function setProperty<T, K, V>(instance: T, key: K & keyof<T>, value: V & index<T, K>): ()
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        type Object = { part: string }
+        local object: Object = { part = "before" }
+        setProperty(object, "part", "after")
+    )"));
+}
+
 TEST_CASE_FIXTURE(BuiltinsFixture, "keyof_type_function_works_with_metatables")
 {
     if (FFlag::DebugLuauForceOldSolver)

@@ -494,7 +494,7 @@ struct ApplyMappedGenerics : Substitution
             }
         }
 
-        return ty->persistent;
+        return ty->persistent && !get<TypeFunctionInstanceType>(ty);
     }
     bool ignoreChildren(TypePackId ty) override
     {
