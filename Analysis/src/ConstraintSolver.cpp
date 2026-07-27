@@ -114,6 +114,28 @@ static void dump(ConstraintSolver* cs, ToStringOptions& opts);
     return true;
 }
 
+static bool containsFunctionAlternative(TypeId ty)
+{
+    ty = follow(ty);
+    if (is<FunctionType>(ty))
+        return true;
+
+    if (const UnionType* unionType = get<UnionType>(ty))
+    {
+        for (TypeId option : unionType)
+            if (containsFunctionAlternative(option))
+                return true;
+    }
+    else if (const IntersectionType* intersectionType = get<IntersectionType>(ty))
+    {
+        for (TypeId part : intersectionType)
+            if (containsFunctionAlternative(part))
+                return true;
+    }
+
+    return false;
+}
+
 std::pair<std::vector<TypeId>, std::vector<TypePackId>> saturateArguments(
     TypeArena* arena,
     NotNull<BuiltinTypes> builtinTypes,
@@ -2001,16 +2023,125 @@ bool ConstraintSolver::tryDispatch(const FunctionCheckConstraint& c, NotNull<con
     // We don't attempt to perform bidirectional inference on the self type.
     const size_t typeOffset = c.callSite->self ? 1 : 0;
 
-    const std::vector<TypeId> expectedArgs = FFlag::LuauBidirectionalInferenceVariadics
-                                                 ? extendTypePack(*arena, builtinTypes, ftv->argTypes, c.callSite->args.size + typeOffset).head
-                                                 : flatten(ftv->argTypes).first;
     const std::vector<TypeId> argPackHead = flatten(argsPack).first;
+
+    bool hasHigherOrderArgument = false;
+    for (TypeId argTy : argPackHead)
+        hasHigherOrderArgument |= containsFunctionAlternative(argTy);
+    hasHigherOrderArgument &= !ftv->genericPacks.empty();
+
+    DenseHashMap<TypeId, TypeId> higherOrderReplacements{nullptr};
+    DenseHashMap<TypePackId, TypePackId> higherOrderReplacementPacks{nullptr};
+    Unifier2 higherOrderUnifier{arena, builtinTypes, constraint->scope, NotNull{&iceReporter}};
+
+    if (hasHigherOrderArgument)
+    {
+        for (TypeId generic : ftv->generics)
+        {
+            if (auto gty = get<GenericType>(follow(generic)))
+            {
+                TypeId replacement = freshType(arena, builtinTypes, constraint->scope, gty->polarity);
+                higherOrderReplacements[generic] = replacement;
+                higherOrderUnifier.genericSubstitutions[generic] = replacement;
+            }
+        }
+
+        for (TypePackId genericPack : ftv->genericPacks)
+        {
+            if (auto gtp = get<GenericTypePack>(follow(genericPack)))
+            {
+                TypePackId replacement = arena->freshTypePack(constraint->scope);
+                auto freePack = getMutable<FreeTypePack>(replacement);
+                LUAU_ASSERT(freePack);
+                freePack->polarity = gtp->polarity;
+                higherOrderReplacementPacks[genericPack] = replacement;
+                higherOrderUnifier.genericPackSubstitutions[genericPack] = replacement;
+            }
+        }
+    }
 
     // TODO: Clip with LuauRemoveExtraSubtypingInstances
     Subtyping subtyping_DEPRECATED{builtinTypes, arena, normalizer, typeFunctionRuntime, NotNull{&iceReporter}};
 
-    for (size_t i = 0; i < c.callSite->args.size && i + typeOffset < expectedArgs.size() && i + typeOffset < argPackHead.size(); ++i)
+    DenseHashMap<TypeId, TypeId> resolvedHigherOrderReplacements{nullptr};
+    DenseHashMap<TypePackId, TypePackId> resolvedHigherOrderReplacementPacks{nullptr};
+
+    for (size_t i = 0; i < c.callSite->args.size && i + typeOffset < argPackHead.size(); ++i)
     {
+        TypePackId inferenceArgPack = ftv->argTypes;
+        TypePackId expectedArgPack = ftv->argTypes;
+
+        if (hasHigherOrderArgument)
+        {
+            Replacer inferenceReplacer{NotNull{arena}, NotNull{&higherOrderReplacements}, NotNull{&higherOrderReplacementPacks}};
+            inferenceArgPack = inferenceReplacer.substitute(ftv->argTypes).value_or(ftv->argTypes);
+
+            resolvedHigherOrderReplacements.clear();
+            for (const auto& [generic, replacement] : higherOrderReplacements)
+            {
+                TypeId resolved = follow(replacement);
+                if (const FreeType* freeType = get<FreeType>(resolved))
+                {
+                    TypeId upperBound = follow(freeType->upperBound);
+                    TypeId lowerBound = follow(freeType->lowerBound);
+                    if (is<NeverType>(lowerBound) && is<UnknownType>(upperBound))
+                        continue;
+                    resolved = is<UnknownType>(upperBound) ? lowerBound : upperBound;
+                }
+                resolvedHigherOrderReplacements[generic] = resolved;
+            }
+
+            resolvedHigherOrderReplacementPacks.clear();
+            for (const auto& [genericPack, replacement] : higherOrderReplacementPacks)
+            {
+                TypePackId resolved = follow(replacement);
+                if (const TypePack* pack = get<TypePack>(resolved))
+                {
+                    bool changed = false;
+                    std::vector<TypeId> head;
+                    head.reserve(pack->head.size());
+                    TypePackIterator iter = begin(resolved);
+                    TypePackIterator endIter = end(resolved);
+                    while (iter != endIter)
+                    {
+                        TypeId element = follow(*iter);
+                        if (const FreeType* freeType = get<FreeType>(element))
+                        {
+                            TypeId upperBound = follow(freeType->upperBound);
+                            TypeId lowerBound = follow(freeType->lowerBound);
+                            if (!is<NeverType>(lowerBound) || !is<UnknownType>(upperBound))
+                            {
+                                element = is<UnknownType>(upperBound) ? lowerBound : upperBound;
+                                changed = true;
+                            }
+                        }
+                        head.push_back(element);
+                        ++iter;
+                    }
+
+                    if (changed)
+                        resolved = arena->addTypePack(TypePack{std::move(head), iter.tail()});
+                }
+
+                if (!is<FreeTypePack>(resolved))
+                    resolvedHigherOrderReplacementPacks[genericPack] = resolved;
+            }
+
+            Replacer expectedReplacer{NotNull{arena}, NotNull{&resolvedHigherOrderReplacements}, NotNull{&resolvedHigherOrderReplacementPacks}};
+            expectedArgPack = expectedReplacer.substitute(ftv->argTypes).value_or(ftv->argTypes);
+        }
+
+        const std::vector<TypeId> inferenceArgs =
+            FFlag::LuauBidirectionalInferenceVariadics || hasHigherOrderArgument
+                ? extendTypePack(*arena, builtinTypes, inferenceArgPack, c.callSite->args.size + typeOffset).head
+                : flatten(inferenceArgPack).first;
+        const std::vector<TypeId> expectedArgs = FFlag::LuauBidirectionalInferenceVariadics || hasHigherOrderArgument
+                                                     ? extendTypePack(*arena, builtinTypes, expectedArgPack, c.callSite->args.size + typeOffset).head
+                                                     : flatten(expectedArgPack).first;
+        if (i + typeOffset >= inferenceArgs.size() || i + typeOffset >= expectedArgs.size())
+            break;
+
+        TypeId inferredExpectedArgTy = inferenceArgs[i + typeOffset];
         TypeId expectedArgTy = follow(expectedArgs[i + typeOffset]);
         AstExpr* expr = unwrapGroup(c.callSite->args.data[i]);
 
@@ -2025,6 +2156,9 @@ bool ConstraintSolver::tryDispatch(const FunctionCheckConstraint& c, NotNull<con
             expectedArgTy,
             expr
         );
+
+        if (hasHigherOrderArgument)
+            (void)higherOrderUnifier.unify(argPackHead[i + typeOffset], inferredExpectedArgTy);
 
         // Consider:
         //

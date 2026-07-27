@@ -3227,7 +3227,7 @@ bool TypeChecker2::testLiteralOrAstTypeIsSubtype(AstExpr* expr, TypeId expectedT
 
     SubtypingResult r;
 
-    if (FFlag::LuauImproveUniqueTableWidthSubtyping && !FFlag::LuauBidirectionalInferenceSimplifyTables)
+    if (FFlag::LuauImproveUniqueTableWidthSubtyping)
     {
         DenseHashSet<TypeId> uniqueTypes{nullptr};
         findUniqueTypes(NotNull{&uniqueTypes}, std::vector{expr}, NotNull{&module->astTypes});

@@ -90,7 +90,6 @@ struct FindFunctionTypeIn : IterativeTypeVisitor
             {
                 ambiguous = true;
             }
-
         }
         else
         {
@@ -265,7 +264,6 @@ struct BidirectionalTypePusher
                             !containsGeneric(expectedLambdaArgTys[argIndex], NotNull{genericTypesAndPacks}))
                             solver->bind(NotNull{constraint}, lambdaArgTys[argIndex], expectedLambdaArgTys[argIndex]);
                     }
-
                 }
                 else
                 {
@@ -334,6 +332,13 @@ struct BidirectionalTypePusher
                 }
 
                 return exprType;
+            }
+
+            if (expectedTableTy->indexer)
+            {
+                TableType* inferredTableTy = getMutable<TableType>(exprType);
+                if (inferredTableTy && !inferredTableTy->indexer)
+                    inferredTableTy->indexer = expectedTableTy->indexer;
             }
 
             for (const AstExprTable::Item& item : exprTable->items)

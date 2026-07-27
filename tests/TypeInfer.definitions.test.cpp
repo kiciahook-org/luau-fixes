@@ -9,6 +9,7 @@
 
 using namespace Luau;
 
+LUAU_FASTFLAG(LuauBidirectionalInferenceSimplifyTables)
 LUAU_FASTINT(LuauTypeInferRecursionLimit)
 
 TEST_SUITE_BEGIN("DefinitionTests");
@@ -261,6 +262,53 @@ TEST_CASE_FIXTURE(Fixture, "declaring_generic_functions")
     CHECK_EQ(toString(requireType("f")), "<a, b>(a, b) -> string");
     CHECK_EQ(toString(requireType("g")), "<a..., b...>(a...) -> (b...)");
     CHECK_EQ(toString(requireType("h")), "<a, b>(a, b) -> (b, a)");
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "generic_call_preserves_optional_properties_from_definition_types")
+{
+    ScopedFastFlag _{FFlag::LuauBidirectionalInferenceSimplifyTables, true};
+
+    loadDefinition(R"(
+        type RequestOptions = {
+            Url: string,
+            Method: string,
+            Body: string?,
+            Headers: { [string]: any }?,
+        }
+
+        type Response = {
+            Success: boolean,
+        }
+
+        declare task: {
+            spawn: <A..., R...>(threadOrFunction: thread | (A...) -> R..., A...) -> thread,
+        }
+        declare function request(options: RequestOptions): Response
+    )");
+
+    CheckResult result = check(R"(
+        type Transport = {
+            endpoint: string,
+        }
+
+        local function report(transport: Transport)
+            task.spawn(function()
+                local body = "payload"
+                pcall(request, {
+                    Url = transport.endpoint,
+                    Method = "POST",
+                    Headers = {
+                        ["Content-Type"] = "application/x-sentry-envelope",
+                        ["X-Sentry-Auth"] = "auth",
+                        ["User-Agent"] = "client/0.1.0",
+                    },
+                    Body = body,
+                })
+            end)
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
 }
 
 TEST_CASE_FIXTURE(Fixture, "class_definition_function_prop")
