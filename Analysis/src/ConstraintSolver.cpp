@@ -3585,13 +3585,13 @@ bool ConstraintSolver::tryDispatchIterableTable(TypeId iteratorTy, const Iterabl
     if (auto iteratorTable = get<TableType>(iteratorTy))
     {
         /*
-         * We try not to dispatch IterableConstraints over free tables because
+         * We try not to dispatch IterableConstraints over free or unsealed tables because
          * it's possible that there are other constraints on the table that will
          * clarify what we should do.
          *
          * We should eventually introduce a type function to talk about iteration.
          */
-        if (iteratorTable->state == TableState::Free && !force)
+        if ((iteratorTable->state == TableState::Free || iteratorTable->state == TableState::Unsealed) && !force)
             return block(iteratorTy, constraint);
 
         if (iteratorTable->indexer)

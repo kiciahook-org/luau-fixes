@@ -325,6 +325,11 @@ UnifyResult Unifier2::unifyFreeWithType(TypeId subTy, TypeId superTy)
     auto doDefault = [&]()
     {
         auto newSuperTy = instantiateWithBoundTypes(superTy);
+        TypeId inferenceBound = follow(subFree->lowerBound);
+
+        if (newSuperTy != superTy && get<TableType>(inferenceBound) && get<TableType>(superTy))
+            (void)unify_(inferenceBound, superTy);
+
         subFree->upperBound = mkIntersection(subFree->upperBound, newSuperTy);
         expandedFreeTypes[subTy].push_back(newSuperTy);
         return UnifyResult::Ok;

@@ -553,6 +553,26 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "iter_constraint_before_loop_body")
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
+TEST_CASE_FIXTURE(BuiltinsFixture, "dynamic_indexer_inferred_before_later_generalized_iteration")
+{
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        local source: { [string]: string } = { one = "value" }
+        local valuesByName = {}
+        for name, value in source do
+            local values = valuesByName[name]
+            if values == nil then
+                values = {}
+                valuesByName[name] = values
+            end
+            table.insert(values, value)
+        end
+
+        for _, values in valuesByName do
+            table.sort(values)
+        end
+    )"));
+}
+
 TEST_CASE_FIXTURE(BuiltinsFixture, "rbxl_place_file_crash_for_wrong_constraints")
 {
     CheckResult result = check(R"(
