@@ -18,6 +18,7 @@ LUAU_FASTFLAG(DebugLuauForceOldSolver)
 LUAU_FASTFLAG(LuauExportValueSyntax)
 LUAU_FASTFLAG(LuauTweakAccessViolationReporting)
 LUAU_FASTFLAG(LuauTidyTypePrototyping)
+LUAU_FASTFLAG(LuauFixPropReadsOnMetatableTypes)
 
 TEST_SUITE_BEGIN("TypeInferOOP");
 
@@ -163,9 +164,9 @@ TEST_CASE_FIXTURE(Fixture, "inferring_hundreds_of_self_calls_should_not_suffocat
 
     ModulePtr module = getMainModule();
     if (!FFlag::DebugLuauForceOldSolver)
-        CHECK_GE(80, module->internalTypes.types.size());
+        CHECK_GE(80, module->internalTypes->types.size());
     else
-        CHECK_GE(50, module->internalTypes.types.size());
+        CHECK_GE(50, module->internalTypes->types.size());
 }
 
 TEST_CASE_FIXTURE(Fixture, "pass_too_many_arguments")
@@ -1119,7 +1120,7 @@ end
     LUAU_REQUIRE_ERROR_COUNT(1, result);
     auto err = get<SyntaxError>(result.errors[0]);
     REQUIRE(err);
-    CHECK_EQ("Variable 'Animal' is constant and may not be reassigned", err->message);
+    CHECK_EQ("'Animal' refers to a class and cannot be used as a variable name (defined on line 2)", err->message);
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "class_that_shadows_a_type_alias")
@@ -1127,7 +1128,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "class_that_shadows_a_type_alias")
     ScopedFastFlag sffs[] = {
         {FFlag::DebugLuauForceOldSolver, false},
         {FFlag::DebugLuauUserDefinedClasses, true},
-        {FFlag::LuauTidyTypePrototyping, true},
     };
 
     CheckResult result = check(R"(
@@ -1147,7 +1147,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "typecheck_class_method_field_access")
     ScopedFastFlag sffs[] = {
         {FFlag::DebugLuauForceOldSolver, false},
         {FFlag::DebugLuauUserDefinedClasses, true},
-        {FFlag::LuauTidyTypePrototyping, true},
     };
 
     CheckResult result = check(R"(
@@ -1175,7 +1174,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "typecheck_class_annotations")
     ScopedFastFlag sffs[] = {
         {FFlag::DebugLuauForceOldSolver, false},
         {FFlag::DebugLuauUserDefinedClasses, true},
-        {FFlag::LuauTidyTypePrototyping, true},
     };
 
     CheckResult result = check(R"(
@@ -1203,8 +1201,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "read_unknown_property_from_class_object_or_i
     ScopedFastFlag sffs[] = {
         {FFlag::DebugLuauForceOldSolver, false},
         {FFlag::DebugLuauUserDefinedClasses, true},
-        {FFlag::LuauTidyTypePrototyping, true},
-        {FFlag::LuauTweakAccessViolationReporting, true},
     };
 
     CheckResult result = check(R"(
@@ -1238,8 +1234,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "writes_to_class_object_properties_are_forbid
     ScopedFastFlag sffs[] = {
         {FFlag::DebugLuauForceOldSolver, false},
         {FFlag::DebugLuauUserDefinedClasses, true},
-        {FFlag::LuauTidyTypePrototyping, true},
-        {FFlag::LuauTweakAccessViolationReporting, true},
     };
 
     CheckResult result = check(R"(
@@ -1297,8 +1291,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "writes_to_unknown_class_instance_properties_
     ScopedFastFlag sffs[] = {
         {FFlag::DebugLuauForceOldSolver, false},
         {FFlag::DebugLuauUserDefinedClasses, true},
-        {FFlag::LuauTidyTypePrototyping, true},
-        {FFlag::LuauTweakAccessViolationReporting, true},
     };
 
     CheckResult result = check(R"(

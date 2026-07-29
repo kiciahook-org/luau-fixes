@@ -12,6 +12,7 @@ LUAU_FASTFLAG(DebugLuauForceOldSolver)
 LUAU_FASTFLAG(DebugLuauAssertOnForcedConstraint)
 LUAU_FASTFLAG(LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
 LUAU_FASTFLAG(LuauIndexingIntoErrorGivesError);
+LUAU_FASTFLAG(LuauAvoidTrivialPhis)
 
 using namespace Luau;
 
@@ -41,7 +42,7 @@ struct MagicInstanceIsA final : MagicFunction
             return std::nullopt;
 
         ModulePtr module = typeChecker.currentModule;
-        TypePackId booleanPack = module->internalTypes.addTypePack({typeChecker.booleanType});
+        TypePackId booleanPack = module->internalTypes->addTypePack({typeChecker.booleanType});
         return WithPredicate<TypePackId>{booleanPack, {IsAPredicate{std::move(*lvalue), expr.location, tfun->type}}};
     }
 
@@ -4236,6 +4237,31 @@ TEST_CASE_FIXTURE(Fixture, "post_if_phi_does_not_preserve_unproven_discriminated
     CHECK(get<MissingUnionProperty>(result.errors[4]));
     CHECK(get<MissingUnionProperty>(result.errors[5]));
     CHECK(get<MissingUnionProperty>(result.errors[6]));
+}
+
+TEST_CASE_FIXTURE(Fixture, "cli_181894_refinement_cancelled_by_for_loop")
+{
+    ScopedFastFlag _{FFlag::LuauAvoidTrivialPhis, true};
+
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        --!strict
+        type LightingChanger = { [string]: number, Instances: LightingChanger }
+
+        local lightingChangers: { LightingChanger } = nil :: any
+
+        local closestChanger: LightingChanger?
+        if #lightingChangers == 1 then
+            closestChanger = lightingChangers[1]
+        end
+        if closestChanger == nil then
+            return
+        end
+
+        for _, _ in closestChanger do
+        end
+
+        local _ = closestChanger.Instances
+    )"));
 }
 
 TEST_SUITE_END();
