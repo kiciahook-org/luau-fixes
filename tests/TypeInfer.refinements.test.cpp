@@ -1055,6 +1055,25 @@ TEST_CASE_FIXTURE(Fixture, "not_a_and_not_b2")
     CHECK_EQ("nil", toString(requireTypeAtPosition({4, 28})));
 }
 
+TEST_CASE_FIXTURE(Fixture, "compound_nil_guard_refines_phi_backed_rhs")
+{
+    CheckResult result = check(R"(
+        local function scan(): number
+            local first: number?, second: number?
+            for _ in {} do
+                first = 1
+                second = 2
+            end
+            if first == nil or second == nil then
+                return 0
+            end
+            return second
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
 TEST_CASE_FIXTURE(BuiltinsFixture, "either_number_or_string")
 {
     CheckResult result = check(R"(

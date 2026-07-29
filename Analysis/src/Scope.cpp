@@ -229,6 +229,11 @@ void Scope::inheritRefinements(const ScopePtr& childScope)
     {
         if (lookup(NotNull{k}))
             rvalueRefinements[k] = a;
+        else if (std::optional<TypeId> ty = childScope->lookupUnrefinedType(NotNull{k}))
+        {
+            lvalueTypes[k] = *ty;
+            rvalueRefinements[k] = a;
+        }
     }
 
     for (const auto& [k, a] : childScope->refinements)
