@@ -1361,6 +1361,40 @@ f(function(x) return x * 2 end)
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
+TEST_CASE_FIXTURE(BuiltinsFixture, "blocked_metatable_property_argument_propagates_context_to_callback")
+{
+    if (FFlag::DebugLuauForceOldSolver)
+        return;
+
+    CheckResult result = check(R"(
+type AnyTable = { [any]: any }
+type EffectiveBranchReplacements = { [string]: AnyTable }
+type Connection = { Disconnect: (self: Connection) -> () }
+type Signal<T...> = { Connect: (self: Signal<T...>, fn: (T...) -> ()) -> Connection }
+type Trove = {
+    Connect: <C, A...>(
+        self: Trove,
+        signal: { Connect: (any, (A...) -> ...any) -> C },
+        fn: (A...) -> ...any
+    ) -> C,
+}
+local Store = {}
+Store.__index = Store
+type StoreData = { EffectiveBranchesReplaced: Signal<EffectiveBranchReplacements> }
+type Store = setmetatable<StoreData, typeof(Store)>
+local trove: Trove = nil :: any
+local store: Store = nil :: any
+
+trove:Connect(store.EffectiveBranchesReplaced, function(replacements)
+    if replacements.SilentAim ~= nil then
+    end
+end)
+)");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK_EQ("(EffectiveBranchReplacements) -> (...any)", toString(requireTypeAtPosition({19, 56})));
+}
+
 TEST_CASE_FIXTURE(BuiltinsFixture, "infer_generic_function_function_argument")
 {
     // FIXME: CLI-116133 bidirectional type inference needs to push expected types in for higher-order function calls

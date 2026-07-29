@@ -2030,6 +2030,27 @@ bool ConstraintSolver::tryDispatch(const FunctionCheckConstraint& c, NotNull<con
         hasHigherOrderArgument |= containsFunctionAlternative(argTy);
     hasHigherOrderArgument &= !ftv->genericPacks.empty();
 
+    if (hasHigherOrderArgument)
+    {
+        bool hasBlockedArgument = false;
+        for (TypeId argTy : argPackHead)
+        {
+            argTy = follow(argTy);
+            if (const BlockedType* blockedType = get<BlockedType>(argTy))
+            {
+                const Constraint* owner = blockedType->getOwner();
+                if (owner && get<HasPropConstraint>(*owner))
+                {
+                    block(argTy, constraint);
+                    hasBlockedArgument = true;
+                }
+            }
+        }
+
+        if (hasBlockedArgument)
+            return false;
+    }
+
     DenseHashMap<TypeId, TypeId> higherOrderReplacements{nullptr};
     DenseHashMap<TypePackId, TypePackId> higherOrderReplacementPacks{nullptr};
     Unifier2 higherOrderUnifier{arena, builtinTypes, constraint->scope, NotNull{&iceReporter}};
@@ -2038,7 +2059,8 @@ bool ConstraintSolver::tryDispatch(const FunctionCheckConstraint& c, NotNull<con
     {
         for (TypeId generic : ftv->generics)
         {
-            if (auto gty = get<GenericType>(follow(generic)))
+            generic = follow(generic);
+            if (auto gty = get<GenericType>(generic))
             {
                 TypeId replacement = freshType(arena, builtinTypes, constraint->scope, gty->polarity);
                 higherOrderReplacements[generic] = replacement;
@@ -2048,7 +2070,8 @@ bool ConstraintSolver::tryDispatch(const FunctionCheckConstraint& c, NotNull<con
 
         for (TypePackId genericPack : ftv->genericPacks)
         {
-            if (auto gtp = get<GenericTypePack>(follow(genericPack)))
+            genericPack = follow(genericPack);
+            if (auto gtp = get<GenericTypePack>(genericPack))
             {
                 TypePackId replacement = arena->freshTypePack(constraint->scope);
                 auto freePack = getMutable<FreeTypePack>(replacement);
