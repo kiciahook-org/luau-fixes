@@ -15,7 +15,8 @@ using namespace Luau;
 LUAU_FASTFLAG(DebugLuauForceOldSolver)
 LUAU_DYNAMIC_FASTINT(LuauTypeFamilyApplicationCartesianProductLimit)
 LUAU_FASTFLAG(DebugLuauAssertOnForcedConstraint)
-LUAU_FASTFLAG(LuauDoNotExportBrokenTypeFunction)
+LUAU_FASTFLAG(LuauCloneTypeFunctionFromForeignArena)
+LUAU_FASTFLAG(LuauNormalizeGuardAgainstNonTestableNegations)
 
 struct TypeFunctionFixture : Fixture
 {
@@ -210,6 +211,8 @@ TEST_CASE_FIXTURE(Fixture, "add_function_at_work")
         local c = add("foo", 1)
     )");
 
+    ignoreMissingAnnotations(result);
+
     LUAU_REQUIRE_ERROR_COUNT(2, result);
     CHECK(toString(requireType("a")) == "number");
     CHECK(toString(requireType("b")) == "add<number, string>");
@@ -291,6 +294,8 @@ TEST_CASE_FIXTURE(Fixture, "internal_functions_raise_errors")
         end
     )");
 
+    ignoreMissingAnnotations(result);
+
     LUAU_REQUIRE_ERROR_COUNT(1, result);
     CHECK(
         toString(result.errors[0]) ==
@@ -317,10 +322,12 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "type_functions_can_be_shadowed")
         end
     )");
 
+    ignoreMissingAnnotations(result);
+
     LUAU_REQUIRE_NO_ERRORS(result);
 
     CHECK(toString(requireType("hi")) == "(string) -> string");
-    CHECK(toString(requireType("plus")) == "<a, b>(a, b) -> add<a, b>");
+    CHECK(toString(requireType("plus")) == "<T, U>(T, U) -> add<T, U>");
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "type_functions_inhabited_with_normalization")
@@ -913,6 +920,8 @@ local function Use(Mode)
 end
     )");
 
+    ignoreMissingAnnotations(result);
+
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
@@ -1074,6 +1083,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "cyclic_metatable_should_not_crash_index")
 
         type IndexFromT = index<typeof(t), "p">
     )");
+
+    ignoreMissingAnnotations(result);
 
     LUAU_REQUIRE_ERROR_COUNT(2, result);
     CHECK_EQ("Type 't' does not have key 'p'", toString(result.errors[0]));
@@ -1464,7 +1475,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "setmetatable_type_function_assigns_correct_m
     LUAU_REQUIRE_NO_ERRORS(result);
 
     TypeId id = requireTypeAlias("Identity");
-    CHECK_EQ(toString(id, {true}), "{ @metatable { __index: {  } }, {  } }");
+    CHECK_EQ(toString(id, {true}), "setmetatable<{  }, { __index: {  } }>");
     const MetatableType* mt = get<MetatableType>(id);
     REQUIRE(mt);
     CHECK_EQ(toString(mt->metatable), "{ __index: {  } }");
@@ -1483,7 +1494,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "setmetatable_type_function_assigns_correct_m
     LUAU_REQUIRE_NO_ERRORS(result);
 
     TypeId id = requireTypeAlias("Identity");
-    CHECK_EQ(toString(id, {true}), "{ @metatable { __index: {  } }, {  } }");
+    CHECK_EQ(toString(id, {true}), "setmetatable<{  }, { __index: {  } }>");
     const MetatableType* mt = get<MetatableType>(id);
     REQUIRE(mt);
     CHECK_EQ(toString(mt->metatable), "{ __index: {  } }");
@@ -1491,7 +1502,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "setmetatable_type_function_assigns_correct_m
     TypeId foobar = requireTypeAlias("FooBar");
     const MetatableType* mt2 = get<MetatableType>(foobar);
     REQUIRE(mt2);
-    CHECK_EQ(toString(mt2->metatable, {true}), "{ @metatable { __index: {  } }, {  } }");
+    CHECK_EQ(toString(mt2->metatable, {true}), "setmetatable<{  }, { __index: {  } }>");
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "setmetatable_type_function_errors_on_metatable_with_metatable_metamethod")
@@ -1507,7 +1518,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "setmetatable_type_function_errors_on_metatab
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
     TypeId id = requireTypeAlias("Identity");
-    CHECK_EQ(toString(id, {true}), "{ @metatable { __metatable: \"blocked\" }, {  } }");
+    CHECK_EQ(toString(id, {true}), "setmetatable<{  }, { __metatable: \"blocked\" }>");
     const MetatableType* mt = get<MetatableType>(id);
     REQUIRE(mt);
     CHECK_EQ(toString(mt->metatable), "{ __metatable: \"blocked\" }");
@@ -2103,7 +2114,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "oss_2144_type_instantiation_on_type_function
         {FFlag::DebugLuauForceOldSolver, false},
     };
 
-    LUAU_REQUIRE_NO_ERRORS(check(R"(
+    CheckResult result = check(R"(
         --!strict
 
         type ST = {
@@ -2117,7 +2128,9 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "oss_2144_type_instantiation_on_type_function
 
         local t: any = {}
         local _b = access<<"Member1">>(t, "Member1")
-    )"));
+    )");
+    ignoreMissingAnnotations(result);
+    LUAU_REQUIRE_NO_ERRORS(result);
 
     CHECK_EQ("number", toString(requireType("_b")));
 }
@@ -2149,7 +2162,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "exporting_erroneous_type_function_is_error_t
     if (FFlag::DebugLuauForceOldSolver)
         return;
 
-    ScopedFastFlag _{FFlag::LuauDoNotExportBrokenTypeFunction, true};
+    ScopedFastFlag _{FFlag::LuauCloneTypeFunctionFromForeignArena, true};
 
     fileResolver.source["game/A"] = R"(
         local function get(x: string, y: unknown)
@@ -2160,15 +2173,79 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "exporting_erroneous_type_function_is_error_t
     )";
 
     CheckResult aResult = getFrontend().check("game/A");
+    ignoreMissingAnnotations(aResult);
     LUAU_REQUIRE_ERROR_COUNT(3, aResult);
 
     CheckResult bResult = check(R"(
-local Test = require(game.A);
-local x = Test.get("hello", "world")
+        local Test = require(game.A);
+        local x = Test.get("hello", "world")
     )");
+    ignoreMissingAnnotations(bResult);
     LUAU_REQUIRE_NO_ERRORS(bResult);
 
-    CHECK(toString(requireType("x")) == "*error-type*");
+    if (FFlag::LuauCloneTypeFunctionFromForeignArena)
+        CHECK(toString(requireType("x")) == "*error-type<concat<string, unknown>>*");
+    else
+        CHECK(toString(requireType("x")) == "*error-type*");
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "oss_negation_of_nontestable_type_doesnt_crash_1")
+{
+    DOES_NOT_PASS_OLD_SOLVER_GUARD();
+
+    ScopedFastFlag _{FFlag::LuauNormalizeGuardAgainstNonTestableNegations, true};
+
+    CheckResult result = check(R"(
+        type function tf()
+            local dn = types.negationof(types.unionof(types.newfunction(), types.number))
+            return types.intersectionof(types.number, types.negationof(types.unionof(dn, types.string)))
+        end
+        local x: tf<> = nil :: any
+        print(x)
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+    REQUIRE(get<NormalizationTooComplex>(result.errors[0]));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "oss_2634_negation_of_nontestable_type_doesnt_crash_2")
+{
+    DOES_NOT_PASS_OLD_SOLVER_GUARD();
+
+    ScopedFastFlag _{FFlag::LuauNormalizeGuardAgainstNonTestableNegations, true};
+
+    CheckResult result = check(R"(
+        type function mknot()
+            return types.negationof(types.unionof(types.newfunction(), types.number))
+        end
+        local f = function(a: mknot<>)
+            return (a == 5)
+        end
+        return f
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+    REQUIRE(get<NormalizationTooComplex>(result.errors[0]));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "oss_2634_negation_of_nontestable_type_doesnt_crash_3")
+{
+    DOES_NOT_PASS_OLD_SOLVER_GUARD();
+
+    ScopedFastFlag _{FFlag::LuauNormalizeGuardAgainstNonTestableNegations, true};
+
+    CheckResult result = check(R"(
+        type function tf()
+            local dn = types.negationof(types.unionof(types.newfunction(), types.number))
+            return types.negationof(types.unionof(dn, types.string))
+        end
+        local f: tf<> = nil :: any
+        f()
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(2, result);
+    REQUIRE(get<NormalizationTooComplex>(result.errors[0]));
+    REQUIRE(get<NormalizationTooComplex>(result.errors[1]));
 }
 
 TEST_SUITE_END();

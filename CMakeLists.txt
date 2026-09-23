@@ -237,6 +237,8 @@ if(MSVC AND LUAU_BUILD_TESTS)
     # the default stack size that MSVC linker uses is 1 MB; we need more stack space in Debug because stack frames are larger
     set_target_properties(Luau.CLI.Test PROPERTIES LINK_FLAGS_DEBUG /STACK:2097152)
     set_target_properties(Luau.Conformance PROPERTIES LINK_FLAGS_DEBUG /STACK:2097152)
+    set_target_properties(Luau.CLI.Test PROPERTIES LINK_FLAGS_OPTIMIZED /STACK:2097152)
+    set_target_properties(Luau.Conformance PROPERTIES LINK_FLAGS_OPTIMIZED /STACK:2097152)
 endif()
 
 # embed .natvis inside the library debug information
@@ -317,6 +319,28 @@ if(LUAU_BUILD_TESTS)
     target_link_libraries(Luau.CLI.Test PRIVATE osthreads)
 
     add_subdirectory(fuzz)
+endif()
+
+if(LUAU_BUILD_CLI AND LUAU_BUILD_TESTS)
+    if(CMAKE_VERSION VERSION_LESS 3.12)
+        find_package(PythonInterp 3 REQUIRED)
+        set(LUAU_PYTHON_EXECUTABLE "${PYTHON_EXECUTABLE}")
+    else()
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        set(LUAU_PYTHON_EXECUTABLE "${Python3_EXECUTABLE}")
+    endif()
+    add_custom_target(Luau.GoldenTest
+        COMMAND ${LUAU_PYTHON_EXECUTABLE} -m tools.golden.selftest
+            --luau "$<TARGET_FILE:Luau.Repl.CLI>"
+            --luau-analyze "$<TARGET_FILE:Luau.Analyze.CLI>"
+        COMMAND ${LUAU_PYTHON_EXECUTABLE} -m tools.golden
+            --luau "$<TARGET_FILE:Luau.Repl.CLI>"
+            --luau-analyze "$<TARGET_FILE:Luau.Analyze.CLI>"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        USES_TERMINAL
+        VERBATIM
+    )
+    add_dependencies(Luau.GoldenTest Luau.Repl.CLI Luau.Analyze.CLI)
 endif()
 
 if(LUAU_BUILD_WEB)

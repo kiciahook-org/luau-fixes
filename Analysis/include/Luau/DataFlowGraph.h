@@ -65,21 +65,21 @@ private:
     NotNull<DefArena> defArena;
     NotNull<RefinementKeyArena> keyArena;
 
-    DenseHashMap<const AstExpr*, const Def*> astDefs{nullptr};
+    DenseHashMap<const AstExpr*, const Def*> astDefs;
 
     // Sometimes we don't have the AstExprLocal* but we have AstLocal*, and sometimes we need to extract that DefId.
-    DenseHashMap<const AstLocal*, const Def*> localDefs{nullptr};
+    DenseHashMap<const AstLocal*, const Def*> localDefs;
 
     // There's no AstStatDeclaration, and it feels useless to introduce it just to enforce an invariant in one place.
     // All keys in this maps are really only statements that ambiently declares a symbol.
-    DenseHashMap<const AstStat*, const Def*> declaredDefs{nullptr};
-    DenseHashMap<const Def*, Symbol> defToSymbol{nullptr};
+    DenseHashMap<const AstStat*, const Def*> declaredDefs;
+    DenseHashMap<const Def*, Symbol> defToSymbol;
 
-    DenseHashMap<const AstExpr*, const RefinementKey*> astRefinementKeys{nullptr};
-    DenseHashMap<const AstExpr*, RefinementKeyProvenance> refinementKeyProvenance{nullptr};
-    DenseHashMap<const AstExpr*, size_t> astMutationGenerations{nullptr};
-    DenseHashMap<const AstExpr*, const AstExpr*> astConditionParents{nullptr};
-    DenseHashSet<const AstLocal*> writtenByCapturedLocals{nullptr};
+    DenseHashMap<const AstExpr*, const RefinementKey*> astRefinementKeys;
+    DenseHashMap<const AstExpr*, RefinementKeyProvenance> refinementKeyProvenance;
+    DenseHashMap<const AstExpr*, size_t> astMutationGenerations;
+    DenseHashMap<const AstExpr*, const AstExpr*> astConditionParents;
+    DenseHashSet<const AstLocal*> writtenByCapturedLocals;
     friend struct DataFlowGraphBuilder;
 };
 
@@ -98,8 +98,8 @@ struct DfgScope
     using Bindings = DenseHashMap<Symbol, const Def*>;
     using Props = DenseHashMap<const Def*, std::unordered_map<std::string, const Def*>>;
 
-    Bindings bindings{Symbol{}};
-    Props props{nullptr};
+    Bindings bindings;
+    Props props;
 
     std::optional<DefId> lookup(Symbol symbol) const;
     std::optional<DefId> lookup(DefId def, const std::string& key) const;
@@ -154,8 +154,8 @@ private:
         size_t versionOffset = 0;
     };
 
-    DenseHashMap<Symbol, FunctionCapture> captures{Symbol{}};
-    DenseHashMap<const Def*, const RefinementKey*> activeRefinementKeyProvenance{nullptr};
+    DenseHashMap<Symbol, FunctionCapture> captures;
+    DenseHashMap<const Def*, const RefinementKey*> activeRefinementKeyProvenance;
     size_t mutationGeneration = 0;
     void invalidateRefinementKeyProvenance();
     void resolveCaptures();

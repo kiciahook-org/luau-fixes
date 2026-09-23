@@ -11,7 +11,6 @@
 
 using namespace Luau;
 
-LUAU_FASTFLAG(LuauBidirectionalInferenceSimplifyTables)
 LUAU_FASTINT(LuauTypeInferRecursionLimit)
 
 TEST_SUITE_BEGIN("DefinitionTests");
@@ -268,8 +267,6 @@ TEST_CASE_FIXTURE(Fixture, "declaring_generic_functions")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "generic_call_preserves_optional_properties_from_definition_types")
 {
-    ScopedFastFlag _{FFlag::LuauBidirectionalInferenceSimplifyTables, true};
-
     loadDefinition(R"(
         type RequestOptions = {
             Url: string,

@@ -4,16 +4,24 @@
 #include "Luau/TypeFunction.h"
 #include "Luau/VisitType.h"
 
-LUAU_FASTFLAG(LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier)
-LUAU_FASTFLAG(LuauHigherOrderGenericInference)
+LUAU_FASTFLAGVARIABLE(LuauIterableConstraintMutatesIterator)
 
 namespace Luau
 {
 
+// Clip with LuauCyclicRequireTypeInference
 Constraint::Constraint(NotNull<Scope> scope, const Location& location, ConstraintV&& c)
     : scope(scope)
     , location(location)
     , c(std::move(c))
+{
+}
+
+Constraint::Constraint(NotNull<Scope> scope, const Location& location, ConstraintV&& c, std::shared_ptr<ModuleName> moduleName)
+    : scope(scope)
+    , location(location)
+    , c(std::move(c))
+    , moduleName(std::move(moduleName))
 {
 }
 
@@ -119,7 +127,10 @@ std::pair<TypeIds, TypePackIds> Constraint::getMaybeMutatedTypes() const
     {
         for (TypeId ty : itc->variables)
             rci.traverse(ty);
-        // `IterableConstraints` should not mutate `iterator`.
+        if (FFlag::LuauIterableConstraintMutatesIterator)
+        {
+            rci.traverse(itc->iterator);
+        }
     }
     else if (auto nc = get<NameConstraint>(*this))
     {
@@ -139,13 +150,6 @@ std::pair<TypeIds, TypePackIds> Constraint::getMaybeMutatedTypes() const
         rci.traverse(fcc->fn);
         rci.traverse(fcc->argsPack);
         rci.traverseIntoTypeFunctions = true;
-    }
-    else if (
-        auto ptc = get<DEPRECATED_PrimitiveTypeConstraint>(*this);
-        !(FFlag::LuauRemovePrimitiveTypeConstraintAndSubtypingUnifier || FFlag::LuauHigherOrderGenericInference) && ptc
-    )
-    {
-        rci.traverse(ptc->freeType);
     }
     else if (auto hpc = get<HasPropConstraint>(*this))
     {

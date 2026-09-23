@@ -17,9 +17,10 @@
 
 #include <algorithm>
 
-LUAU_FASTFLAG(LuauSolverV2)
 LUAU_DYNAMIC_FASTINTVARIABLE(LuauSimplificationComplexityLimit, 8)
 LUAU_DYNAMIC_FASTINTVARIABLE(LuauTypeSimplificationIterationLimit, 128)
+LUAU_FASTFLAGVARIABLE(LuauCheckReadTyWhenRelatingExtern)
+LUAU_FASTFLAGVARIABLE(LuauRelateIndexersTypo)
 
 namespace Luau
 {
@@ -31,7 +32,7 @@ struct TypeSimplifier
     NotNull<BuiltinTypes> builtinTypes;
     NotNull<TypeArena> arena;
 
-    DenseHashSet<TypeId> blockedTypes{nullptr};
+    DenseHashSet<TypeId> blockedTypes;
 
     int recursionDepth = 0;
 
@@ -187,7 +188,14 @@ Relation relateTableToExternType(const TableType* table, const ExternType* cls, 
     {
         if (auto propInExternType = lookupExternTypeProp(cls, name))
         {
-            LUAU_ASSERT(prop.readTy && propInExternType->readTy);
+            if (FFlag::LuauCheckReadTyWhenRelatingExtern)
+            {
+                // If either of these properties are disjoint read-write or write-only, bail.
+                if (!(prop.isReadOnly() || prop.isShared()) || !(propInExternType->isReadOnly() || propInExternType->isShared()))
+                    return Relation::Intersects;
+            }
+            else
+                LUAU_ASSERT(prop.readTy && propInExternType->readTy);
             // For all examples, consider:
             //
             //  declare extern type Foobar with
@@ -398,8 +406,16 @@ Relation relateTables(const TableType* leftTable, const TableType* rightTable, S
     if (relate(leftTable->indexer->indexType, rightTable->indexer->indexType, seen) != Relation::Coincident)
         return Relation::Intersects;
 
-    if (relate(leftTable->indexer->indexType, rightTable->indexer->indexType, seen) != Relation::Coincident)
-        return Relation::Intersects;
+    if (FFlag::LuauRelateIndexersTypo)
+    {
+        if (relate(leftTable->indexer->indexResultType, rightTable->indexer->indexResultType, seen) != Relation::Coincident)
+            return Relation::Intersects;
+    }
+    else
+    {
+        if (relate(leftTable->indexer->indexType, rightTable->indexer->indexType, seen) != Relation::Coincident)
+            return Relation::Intersects;
+    }
 
     return hasSubset ? Relation::Subset : Relation::Coincident;
 }
@@ -684,7 +700,7 @@ Relation relate(TypeId left, TypeId right, SimplifierSeenSet& seen)
 // A cheap and approximate subtype test
 Relation relate(TypeId left, TypeId right)
 {
-    SimplifierSeenSet seen{{}};
+    SimplifierSeenSet seen;
     return relate(left, right, seen);
 }
 
@@ -811,7 +827,7 @@ TypeId TypeSimplifier::intersectFromParts(TypeIds parts)
             return builtinTypes->neverType;
 
         // At this point, source will contain some intersection, and dest will contain
-        // the intersection we want to retain for the next interation.
+        // the intersection we want to retain for the next iteration.
 
         // We swap the two, so that we can use `source` as the basis for the next iteration.
         std::swap(source, dest);
@@ -1662,7 +1678,7 @@ TypeId TypeSimplifier::union_(TypeId left, TypeId right)
 
 TypeId TypeSimplifier::simplify(TypeId ty)
 {
-    DenseHashSet<TypeId> seen{nullptr};
+    DenseHashSet<TypeId> seen;
     return simplify(ty, seen);
 }
 
@@ -1753,7 +1769,7 @@ bool isSimpleDiscriminant(NotNull<BuiltinTypes> builtinTypes, TypeId ty, DenseHa
  */
 bool isSimpleDiscriminant(NotNull<BuiltinTypes> builtinTypes, TypeId ty)
 {
-    DenseHashSet<TypeId> seenSet{nullptr};
+    DenseHashSet<TypeId> seenSet;
     return isSimpleDiscriminant(builtinTypes, ty, seenSet);
 }
 
@@ -2021,7 +2037,7 @@ std::optional<TypeId> TypeSimplifier::intersectWithSimpleDiscriminant(TypeId tar
 
 std::optional<TypeId> TypeSimplifier::intersectWithSimpleDiscriminant(TypeId target, TypeId discriminant) const
 {
-    DenseHashSet<TypeId> seenSet{nullptr};
+    DenseHashSet<TypeId> seenSet;
     return intersectWithSimpleDiscriminant(target, discriminant, seenSet);
 }
 

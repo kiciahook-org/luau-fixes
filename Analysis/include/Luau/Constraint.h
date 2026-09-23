@@ -51,9 +51,9 @@ struct GeneralizationConstraint
     TypeId generalizedType;
     TypeId sourceType;
 
-    std::vector<TypeId> interiorTypes;
-    bool hasDeprecatedAttribute = false;
-    AstAttr::DeprecatedInfo deprecatedInfo;
+    /// Potentially null pointer to a deprecated attribute. Used to attach
+    /// deprecation info to the generalized function type.
+    AstAttr* maybeDeprecatedAttr;
 
     /// If true, never introduce generics.  Always replace free types by their
     /// bounds or unknown. Presently used only to generalize the whole module.
@@ -103,6 +103,8 @@ struct FunctionCallConstraint
     std::vector<TypeId> typeArguments;
     std::vector<TypePackId> typePackArguments;
 
+    DenseHashMap<const AstExpr*, TypeId>* astTypes = nullptr;
+
     // When we dispatch this constraint, we update the key at this map to record
     // the overload that we selected.
     DenseHashMap<const AstNode*, TypeId>* astOverloadResolvedTypes = nullptr;
@@ -122,32 +124,6 @@ struct FunctionCheckConstraint
     class AstExprCall* callSite = nullptr;
     NotNull<DenseHashMap<const AstExpr*, TypeId>> astTypes;
     NotNull<DenseHashMap<const AstExpr*, TypeId>> astExpectedTypes;
-};
-
-// prim FreeType ExpectedType PrimitiveType
-//
-// FreeType is bounded below by the singleton type and above by PrimitiveType
-// initially. When this constraint is resolved, it will check that the bounds
-// of the free type are well-formed by subtyping.
-//
-// If they are not well-formed, then FreeType is replaced by its lower bound
-//
-// If they are well-formed and ExpectedType is potentially a singleton (an
-// actual singleton or a union that contains a singleton),
-// then FreeType is replaced by its lower bound
-//
-// else FreeType is replaced by PrimitiveType
-//
-// Clip with LuauRemovePrimitiveTypeConstraint
-struct DEPRECATED_PrimitiveTypeConstraint
-{
-    TypeId freeType;
-
-    // potentially gets used to force the lower bound?
-    std::optional<TypeId> expectedType;
-
-    // the primitive type to check against
-    TypeId primitiveType;
 };
 
 // result ~ hasProp type "prop_name"
@@ -326,7 +302,6 @@ using ConstraintV = Variant<
     TypeAliasExpansionConstraint,
     FunctionCallConstraint,
     FunctionCheckConstraint,
-    DEPRECATED_PrimitiveTypeConstraint,
     HasPropConstraint,
     HasIndexerConstraint,
     AssignPropConstraint,
@@ -343,6 +318,7 @@ using ConstraintV = Variant<
 struct Constraint
 {
     Constraint(NotNull<Scope> scope, const Location& location, ConstraintV&& c);
+    Constraint(NotNull<Scope> scope, const Location& location, ConstraintV&& c, std::shared_ptr<ModuleName> moduleName);
 
     Constraint(const Constraint&) = delete;
     Constraint& operator=(const Constraint&) = delete;
@@ -350,6 +326,7 @@ struct Constraint
     NotNull<Scope> scope;
     Location location;
     ConstraintV c;
+    std::shared_ptr<ModuleName> moduleName;
 
     /**
      * Return the types and type packs that may be mutated by this constraint.

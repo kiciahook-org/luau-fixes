@@ -23,8 +23,8 @@ LUAU_FASTINT(LuauTypeInferRecursionLimit)
 
 LUAU_DYNAMIC_FASTINTVARIABLE(LuauUnifierRecursionLimit, 100)
 
-LUAU_FASTFLAGVARIABLE(LuauLimitUnificationRecursion)
-LUAU_FASTFLAG(LuauHigherOrderGenericInference)
+LUAU_FASTFLAGVARIABLE(LuauDoNotLeakGenericsInIndexer)
+LUAU_FASTFLAGVARIABLE(LuauInferReadOnlyIndexers)
 
 namespace Luau
 {
@@ -155,13 +155,9 @@ UnifyResult Unifier2::unify_(TypeId subTy, TypeId superTy)
     // NOTE: It's a little odd that we are doing something non-exceptional for
     // the core of unification but not for occurs check, which may throw an
     // exception. It would be nice if, in the future, this were unified.
-    std::optional<NonExceptionalRecursionLimiter> nerl;
-    if (FFlag::LuauLimitUnificationRecursion)
-    {
-        nerl.emplace(&recursionCount);
-        if (!nerl->isOk(recursionLimit))
-            return UnifyResult::TooComplex;
-    }
+    NonExceptionalRecursionLimiter nerl{&recursionCount};
+    if (!nerl.isOk(recursionLimit))
+        return UnifyResult::TooComplex;
 
     subTy = follow(subTy);
     superTy = follow(superTy);
@@ -225,7 +221,22 @@ UnifyResult Unifier2::unify_(TypeId subTy, TypeId superTy)
 
     auto subIntersection = get<IntersectionType>(subTy);
     auto superIntersection = get<IntersectionType>(superTy);
-    if (superIntersection)
+
+    if (subIntersection && superIntersection)
+    {
+        // Upstream skips members shared by both intersections. When nothing is
+        // shared, keep the sub-intersection whole so that generics in the
+        // super-intersection bind to the full intersection rather than to a
+        // union of its individual parts.
+        for (TypeId superPart : superIntersection->parts)
+        {
+            if (std::find(subIntersection->parts.begin(), subIntersection->parts.end(), superPart) != subIntersection->parts.end())
+                return unify_(subIntersection, superIntersection);
+        }
+
+        return unify_(subTy, superIntersection);
+    }
+    else if (superIntersection)
         return unify_(subTy, superIntersection);
     else if (subIntersection)
         return unify_(subIntersection, superTy);
@@ -326,8 +337,17 @@ UnifyResult Unifier2::unifyFreeWithType(TypeId subTy, TypeId superTy)
         auto newSuperTy = instantiateWithBoundTypes(superTy);
         TypeId inferenceBound = follow(subFree->lowerBound);
 
-        if (newSuperTy != superTy && get<TableType>(inferenceBound) && get<TableType>(superTy))
-            (void)unify_(inferenceBound, superTy);
+        // Propagate the element type of an inferred table into a generic
+        // indexer it must satisfy (e.g. `table.insert(t, v)` on a table whose
+        // indexer is still being inferred). Property-only bounds are left to
+        // the default path.
+        if (newSuperTy != superTy)
+        {
+            const TableType* boundTable = get<TableType>(inferenceBound);
+            const TableType* superTable = get<TableType>(superTy);
+            if (boundTable && superTable && boundTable->indexer && superTable->indexer)
+                (void)unify_(inferenceBound, superTy);
+        }
 
         subFree->upperBound = mkIntersection(subFree->upperBound, newSuperTy);
         expandedFreeTypes[subTy].push_back(newSuperTy);
@@ -474,6 +494,35 @@ UnifyResult Unifier2::unify_(TypeId subTy, const UnionType* superUnion)
     return result;
 }
 
+UnifyResult Unifier2::unify_(const IntersectionType* subIntersection, const IntersectionType* superIntersection)
+{
+    TypeIds superIntersectionMembers;
+    superIntersectionMembers.insert(begin(superIntersection), end(superIntersection));
+
+    TypeIds sharedMembers;
+    sharedMembers.insert(begin(subIntersection), end(subIntersection));
+
+    sharedMembers.retain(superIntersectionMembers);
+
+    UnifyResult result = UnifyResult::Ok;
+
+    for (auto subPart : subIntersection)
+    {
+        if (sharedMembers.contains(subPart))
+            continue;
+
+        for (auto superPart : superIntersection)
+        {
+            if (sharedMembers.contains(superPart))
+                continue;
+
+            result &= unify_(subPart, superPart);
+        }
+    }
+
+    return result;
+}
+
 UnifyResult Unifier2::unify_(const IntersectionType* subIntersection, TypeId superTy)
 {
     superTy = follow(superTy);
@@ -553,9 +602,12 @@ UnifyResult Unifier2::unify_(TableType* subTable, const TableType* superTable)
         result &= unify_(subTable->indexer->indexType, superTable->indexer->indexType);
         result &= unify_(subTable->indexer->indexResultType, superTable->indexer->indexResultType);
 
-        // FIXME: We can probably do something more efficient here.
-        result &= unify_(superTable->indexer->indexType, subTable->indexer->indexType);
-        result &= unify_(superTable->indexer->indexResultType, subTable->indexer->indexResultType);
+        if (!FFlag::LuauInferReadOnlyIndexers || (!superTable->indexer->isReadOnly && !subTable->indexer->isReadOnly))
+        {
+            // FIXME: We can probably do something more efficient here.
+            result &= unify_(superTable->indexer->indexType, subTable->indexer->indexType);
+            result &= unify_(superTable->indexer->indexResultType, subTable->indexer->indexResultType);
+        }
     }
 
     if (!subTable->indexer && subTable->state == TableState::Unsealed && superTable->indexer)
@@ -571,15 +623,28 @@ UnifyResult Unifier2::unify_(TableType* subTable, const TableType* superTable)
          * same indexer.
          */
 
-        TypeId indexType = superTable->indexer->indexType;
-        if (TypeId* subst = genericSubstitutions.find(indexType))
-            indexType = *subst;
+        if (FFlag::LuauDoNotLeakGenericsInIndexer)
+        {
+            subTable->indexer = TableIndexer{
+                instantiateWithBoundTypes(superTable->indexer->indexType),
+                instantiateWithBoundTypes(superTable->indexer->indexResultType),
+            };
+        }
+        else
+        {
+            TypeId indexType = superTable->indexer->indexType;
+            if (TypeId* subst = genericSubstitutions.find(indexType))
+                indexType = *subst;
 
-        TypeId indexResultType = superTable->indexer->indexResultType;
-        if (TypeId* subst = genericSubstitutions.find(indexResultType))
-            indexResultType = *subst;
+            TypeId indexResultType = superTable->indexer->indexResultType;
+            if (TypeId* subst = genericSubstitutions.find(indexResultType))
+                indexResultType = *subst;
 
-        subTable->indexer = TableIndexer{indexType, indexResultType};
+            subTable->indexer = TableIndexer{indexType, indexResultType};
+        }
+
+        if (FFlag::LuauInferReadOnlyIndexers)
+            subTable->indexer->isReadOnly = superTable->indexer->isReadOnly;
     }
 
     return result;
@@ -677,13 +742,9 @@ UnifyResult Unifier2::unify_(TypePackId subTp, TypePackId superTp)
     // NOTE: It's a little odd that we are doing something non-exceptional for
     // the core of unification but not for occurs check, which may throw an
     // exception. It would be nice if, in the future, this were unified.
-    std::optional<NonExceptionalRecursionLimiter> nerl;
-    if (FFlag::LuauLimitUnificationRecursion)
-    {
-        nerl.emplace(&recursionCount);
-        if (!nerl->isOk(recursionLimit))
-            return UnifyResult::TooComplex;
-    }
+    NonExceptionalRecursionLimiter nerl{&recursionCount};
+    if (!nerl.isOk(recursionLimit))
+        return UnifyResult::TooComplex;
 
     subTp = follow(subTp);
     superTp = follow(superTp);
@@ -766,137 +827,71 @@ UnifyResult Unifier2::unify_(TypePackId subTp, TypePackId superTp)
         return tp;
     };
 
-    if (FFlag::LuauHigherOrderGenericInference)
+    auto subIter = begin(subTp);
+    const auto subEnd = end(subTp);
+    auto superIter = begin(superTp);
+    const auto superEnd = end(superTp);
+
+    while (subIter != subEnd && superIter != superEnd)
     {
-        auto subIter = begin(subTp);
-        const auto subEnd = end(subTp);
-        auto superIter = begin(superTp);
-        const auto superEnd = end(superTp);
+        unify_(*subIter, *superIter);
+        ++subIter;
+        ++superIter;
+    }
 
-        while (subIter != subEnd && superIter != superEnd)
+    // If we have hit the end of one OR the other iter, and if that ended
+    // iter points at a variadic pack, expand it out.  Note that, if both
+    // packs have variadic tails, we do not expand.
+    if (subIter == subEnd && superIter != superEnd && subIter.tail())
+    {
+        if (auto vtp = get<VariadicTypePack>(follow(*subIter.tail())))
         {
-            unify_(*subIter, *superIter);
-            ++subIter;
-            ++superIter;
-        }
-
-        // If we have hit the end of one OR the other iter, and if that ended
-        // iter points at a variadic pack, expand it out.  Note that, if both
-        // packs have variadic tails, we do not expand.
-        if (subIter == subEnd && superIter != superEnd && subIter.tail())
-        {
-            if (auto vtp = get<VariadicTypePack>(follow(*subIter.tail())))
+            while (superIter != superEnd)
             {
-                while (superIter != superEnd)
-                {
-                    unify_(vtp->ty, *superIter);
-                    ++superIter;
-                }
+                unify_(vtp->ty, *superIter);
+                ++superIter;
             }
         }
-        if (superIter == superEnd && subIter != subEnd && superIter.tail())
+    }
+    if (superIter == superEnd && subIter != subEnd && superIter.tail())
+    {
+        if (auto vtp = get<VariadicTypePack>(follow(*superIter.tail())))
         {
-            if (auto vtp = get<VariadicTypePack>(follow(*superIter.tail())))
+            while (subIter != subEnd)
             {
-                while (subIter != subEnd)
-                {
-                    unify_(*subIter, vtp->ty);
-                    ++subIter;
-                }
+                unify_(*subIter, vtp->ty);
+                ++subIter;
             }
         }
-
-        if (subIter == subEnd && superIter == superEnd)
-        {
-            auto subTail = subIter.tail();
-            auto superTail = superIter.tail();
-
-            if (!subTail && !superTail)
-                return UnifyResult::Ok;
-
-            return deferOrUnify(maybeReplaceTail(subTail), maybeReplaceTail(superTail));
-        }
-        else if (subIter == subEnd)
-        {
-            LUAU_ASSERT(superIter != superEnd);
-            TypePackId newSub = maybeReplaceTail(subIter.tail());
-            TypePackId newSuper = makeTail(superIter, superEnd);
-
-            return deferOrUnify(newSub, newSuper);
-        }
-        else if (superIter == superEnd)
-        {
-            LUAU_ASSERT(subIter != subEnd);
-            TypePackId newSub = makeTail(subIter, subEnd);
-            TypePackId newSuper = maybeReplaceTail(superIter.tail());
-            return deferOrUnify(newSub, newSuper);
-        }
-
-        LUAU_ASSERT(!"Unreachable");
-        return UnifyResult::Ok;
     }
 
-    size_t maxLength = std::max(std::distance(begin(subTp), end(subTp)), std::distance(begin(superTp), end(superTp)));
-
-    auto [subTypes, subTail] = extendTypePack(*arena, builtinTypes, subTp, maxLength);
-    auto [superTypes, superTail] = extendTypePack(*arena, builtinTypes, superTp, maxLength);
-
-    auto limit = std::min(subTypes.size(), superTypes.size());
-    for (size_t i = 0; i < limit; ++i)
-        unify_(subTypes[i], superTypes[i]);
-
-    // At this point it should be the case that either:
-    // - `subTypes` now has all of its types unified, and we are down to its tail
-    // - `superTypes` now has all of its types unified, and we are down to its tail
-
-    if (!subTail && !superTail)
+    if (subIter == subEnd && superIter == superEnd)
     {
-        // If both types are missing a tail, we've done all we can.
-        return UnifyResult::Ok;
-    }
+        auto subTail = subIter.tail();
+        auto superTail = superIter.tail();
 
-    // It should be the case that exclusively one of these packs can be reduced
-    // to their tail for the rest of the function.
-    if (limit < subTypes.size())
-    {
-        LUAU_ASSERT(limit == superTypes.size());
-        // If we have extra subtypes left over, construct a new type pack
-        std::vector<TypeId> newSubHead{subTypes.begin() + superTypes.size(), subTypes.end()};
-        subTp = arena->addTypePack(TypePack{std::move(newSubHead), subTail});
-        superTp = maybeReplaceTail(superTail);
-    }
-    else if (limit < superTypes.size())
-    {
-        LUAU_ASSERT(limit == subTypes.size() && limit < superTypes.size());
-        // If we have extra subtypes left over, construct a new type pack
-        std::vector<TypeId> newSuperHead{superTypes.begin() + subTypes.size(), superTypes.end()};
-        superTp = arena->addTypePack(TypePack{std::move(newSuperHead), superTail});
-        subTp = maybeReplaceTail(subTail);
-    }
-    else
-    {
-        subTp = maybeReplaceTail(subTail);
-        superTp = maybeReplaceTail(superTail);
-    }
-
-    if (isIrresolvable(subTp) || isIrresolvable(superTp))
-    {
-        if (uninhabitedTypeFunctions != nullptr && (uninhabitedTypeFunctions->contains(subTp) || uninhabitedTypeFunctions->contains(superTp)))
+        if (!subTail && !superTail)
             return UnifyResult::Ok;
 
-        incompleteSubtypes.emplace_back(PackSubtypeConstraint{subTp, superTp});
-        return UnifyResult::Ok;
+        return deferOrUnify(maybeReplaceTail(subTail), maybeReplaceTail(superTail));
+    }
+    else if (subIter == subEnd)
+    {
+        LUAU_ASSERT(superIter != superEnd);
+        TypePackId newSub = maybeReplaceTail(subIter.tail());
+        TypePackId newSuper = makeTail(superIter, superEnd);
+
+        return deferOrUnify(newSub, newSuper);
+    }
+    else if (superIter == superEnd)
+    {
+        LUAU_ASSERT(subIter != subEnd);
+        TypePackId newSub = makeTail(subIter, subEnd);
+        TypePackId newSuper = maybeReplaceTail(superIter.tail());
+        return deferOrUnify(newSub, newSuper);
     }
 
-    // ... after doing all of our replacements, we may also need to check for
-    // free types again.
-
-    if (is<FreeTypePack>(subTp))
-        return emplaceFreeTypePack(subTp, superTp);
-
-    if (is<FreeTypePack>(superTp))
-        return emplaceFreeTypePack(superTp, subTp);
-
+    LUAU_ASSERT(!"Unreachable");
     return UnifyResult::Ok;
 }
 
