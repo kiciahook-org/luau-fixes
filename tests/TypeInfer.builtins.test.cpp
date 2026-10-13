@@ -3,7 +3,7 @@
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Common.h"
 
-#include "ClassFixture.h"
+#include "ExternTypeFixture.h"
 #include "Fixture.h"
 
 #include "ScopedFlags.h"
