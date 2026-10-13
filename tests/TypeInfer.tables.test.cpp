@@ -28,6 +28,7 @@ LUAU_FASTINT(LuauPrimitiveInferenceInTableLimit)
 LUAU_FASTFLAG(LuauSubtypingMissingPropertiesAsNil)
 LUAU_FASTFLAG(LuauPropertyModifierMismatchErrors)
 LUAU_FASTFLAG(LuauRemoveConstraintSolverEmplace)
+LUAU_FASTFLAG(LuauForceLess)
 LUAU_FASTFLAG(LuauAlwaysIntersectTablesWithTables)
 LUAU_FASTFLAG(LuauDontBlockRefinementUnconditionally)
 LUAU_FASTFLAG(LuauIterableConstraintMutatesIterator)
@@ -6369,6 +6370,17 @@ TEST_CASE_FIXTURE(Fixture, "cli_119126_regression")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "oss_1914_access_after_assignment_with_assertion")
 {
+    bool forceLess = false;
+    SUBCASE("normal constraint scheduling")
+    {
+        forceLess = false;
+    }
+    SUBCASE("force-less constraint scheduling")
+    {
+        forceLess = true;
+    }
+    ScopedFastFlag forceLessFlag{FFlag::LuauForceLess, forceLess};
+
     ExactTableFlags exactTableFlags;
     ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
 

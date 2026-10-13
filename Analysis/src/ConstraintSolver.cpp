@@ -3432,13 +3432,16 @@ bool ConstraintSolver::tryDispatchIterableTable(TypeId iteratorTy, const Iterabl
     if (auto iteratorTable = get<TableType>(iteratorTy))
     {
         /*
-         * We try not to dispatch IterableConstraints over free or unsealed tables because
-         * it's possible that there are other constraints on the table that will
-         * clarify what we should do.
+         * We try not to dispatch IterableConstraints over free tables or unsealed
+         * records without an indexer because other constraints can clarify their shape.
+         * A known indexer already determines iteration types; waiting for it to seal
+         * can change loop-body inference when constraint forcing is disabled.
          *
          * We should eventually introduce a type function to talk about iteration.
          */
-        if ((iteratorTable->state == TableState::Free || iteratorTable->state == TableState::Unsealed) && !force)
+        const bool needsShape =
+            iteratorTable->state == TableState::Free || (iteratorTable->state == TableState::Unsealed && !iteratorTable->indexer);
+        if (needsShape && !force)
             return block(iteratorTy, constraint);
 
         if (iteratorTable->indexer)
