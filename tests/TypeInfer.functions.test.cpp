@@ -5248,4 +5248,20 @@ TEST_CASE_FIXTURE(Fixture, "extend_typepack_bound_indirection_preserves_referenc
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
+TEST_CASE_FIXTURE(BuiltinsFixture, "forwarded_callback_inherits_expected_return_context")
+{
+    LUAU_REQUIRE_NO_ERRORS(check(R"(
+        local connect: <A...>(source: (A...) -> (), callback: (A...) -> ()) -> () = nil :: any
+        local source: (string?) -> () = nil :: any
+        type GenericFunction<R...> = (...any) -> R...
+        local forward: <T, R...>(fn: T & GenericFunction<R...>) -> T = nil :: any
+
+        connect(source, forward(function(value)
+            print(value)
+        end))
+    )"));
+
+    CHECK_EQ("string?", toString(requireTypeAtPosition({7, 18})));
+}
+
 TEST_SUITE_END();

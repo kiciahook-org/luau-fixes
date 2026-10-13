@@ -1937,6 +1937,22 @@ bool ConstraintSolver::tryDispatch(const FunctionCheckConstraint& c, NotNull<con
         hasHigherOrderArgument |= containsFunctionAlternative(argTy);
     hasHigherOrderArgument &= !ftv->genericPacks.empty();
 
+    if (!hasHigherOrderArgument && !ftv->genericPacks.empty())
+    {
+        const std::vector<TypeId> declaredArgs =
+            extendTypePack(*arena, builtinTypes, ftv->argTypes, c.callSite->args.size + typeOffset).head;
+
+        for (size_t i = 0; i < c.callSite->args.size && i + typeOffset < declaredArgs.size(); ++i)
+        {
+            AstExpr* arg = unwrapGroup(c.callSite->args.data[i]);
+            if (arg->is<AstExprCall>() && containsFunctionAlternative(declaredArgs[i + typeOffset]))
+            {
+                hasHigherOrderArgument = true;
+                break;
+            }
+        }
+    }
+
     if (hasHigherOrderArgument)
     {
         bool hasBlockedArgument = false;
@@ -1988,12 +2004,21 @@ bool ConstraintSolver::tryDispatch(const FunctionCheckConstraint& c, NotNull<con
                 higherOrderUnifier.genericPackSubstitutions[genericPack] = replacement;
             }
         }
+
+        TypeId* expectedResult = c.astExpectedTypes->find(c.callSite);
+        if (expectedResult && containsFunctionAlternative(*expectedResult))
+        {
+            Replacer inferenceReplacer{NotNull{arena}, NotNull{&higherOrderReplacements}, NotNull{&higherOrderReplacementPacks}};
+            TypePackId inferenceRetPack = inferenceReplacer.substitute(ftv->retTypes).value_or(ftv->retTypes);
+            TypePackId expectedRetPack = arena->addTypePack({*expectedResult});
+            (void)higherOrderUnifier.unify(inferenceRetPack, expectedRetPack);
+        }
     }
 
     DenseHashMap<TypeId, TypeId> resolvedHigherOrderReplacements;
     DenseHashMap<TypePackId, TypePackId> resolvedHigherOrderReplacementPacks;
 
-    for (size_t i = 0; i < c.callSite->args.size && i + typeOffset < argPackHead.size(); ++i)
+    for (size_t i = 0; i < c.callSite->args.size && (hasHigherOrderArgument || i + typeOffset < argPackHead.size()); ++i)
     {
         TypePackId inferenceArgPack = ftv->argTypes;
         TypePackId expectedArgPack = ftv->argTypes;
@@ -2071,7 +2096,7 @@ bool ConstraintSolver::tryDispatch(const FunctionCheckConstraint& c, NotNull<con
             c.astTypes, c.astExpectedTypes, NotNull{this}, constraint, NotNull{&genericTypesAndPacks}, NotNull{&u2}, subtyping, expectedArgTy, expr
         );
 
-        if (hasHigherOrderArgument)
+        if (hasHigherOrderArgument && i + typeOffset < argPackHead.size())
             (void)higherOrderUnifier.unify(argPackHead[i + typeOffset], inferredExpectedArgTy);
 
         // Consider:
