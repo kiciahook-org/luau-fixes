@@ -562,13 +562,39 @@ TEST_CASE_FIXTURE(ClassesFixture, "accept_read_only_tables")
     CHECK_EQ("({ read bar: number | string }) -> Foo", toString(requireType("inference")));
 }
 
-TEST_CASE_FIXTURE(ClassesFixture, "fuzzy_classes_crash")
+TEST_CASE_FIXTURE(ClassesFixture, "subclass_inherits_superclass_methods")
 {
-    // TODO CLI-201171: This should be an error, but at least it doesn't crash.
-    LUAU_REQUIRE_NO_ERRORS(check(R"(
-        class sqrt extends sqrt
+    CheckResult result = check(R"(
+        open class Animal
+            function speak(self): string
+                return "hi"
+            end
+
+            function __init(self) end
         end
-    )"));
+
+        class Dog extends Animal
+            function __init(self) end
+        end
+
+        local d = Dog()
+        local s = d:speak()
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    CHECK_EQ("string", toString(requireType("s")));
+}
+
+TEST_CASE_FIXTURE(ClassesFixture, "extends_unknown_name_is_an_error")
+{
+    CheckResult result = check(R"(
+        class Dog extends NonExistentClass
+            function __init(self) end
+        end
+    )");
+
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+    CHECK(get<UnknownSymbol>(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(ClassesFixture, "constructors_must_accept_self")
@@ -1235,7 +1261,7 @@ end
     LUAU_REQUIRE_ERROR_COUNT(1, result);
     auto err = get<SyntaxError>(result.errors[0]);
     REQUIRE(err);
-    CHECK_EQ("'Animal' refers to a class and cannot be used as a variable name (defined on line 2)", err->message);
+    CHECK_EQ("Variable 'Animal' is constant and may not be reassigned", err->message);
 }
 
 TEST_CASE_FIXTURE(ClassesFixture, "class_that_shadows_a_type_alias")

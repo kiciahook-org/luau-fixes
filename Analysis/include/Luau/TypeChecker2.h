@@ -10,6 +10,7 @@
 #include "Luau/Type.h"
 #include "Luau/TypeFwd.h"
 #include "Luau/TypeUtils.h"
+#include "Luau/TypeFunction.h"
 
 namespace Luau
 {
@@ -67,7 +68,8 @@ void check(
     Module* module
 );
 
-enum class AnnotationCheckMode {
+enum class AnnotationCheckMode
+{
     Function,
     Method,
     Constructor,
@@ -88,6 +90,7 @@ struct TypeChecker2
     std::vector<TypeId> functionDeclStack;
 
     DenseHashSet<TypeId> seenTypeFunctionInstances;
+    TypeFunctionAbsenceCache typeFunctionAbsenceCache;
 
     Normalizer normalizer;
     Subtyping _subtyping;
@@ -121,13 +124,15 @@ private:
     void checkForInternalTypeFunction(TypeId ty, Location location);
     TypeId checkForTypeFunctionInhabitance(TypeId instance, Location location);
     TypePackId lookupPack(AstExpr* expr) const;
+    std::optional<TypeId> tryLookupType(AstExpr* expr);
     TypeId lookupType(AstExpr* expr);
     TypeId lookupAnnotation(AstType* annotation);
     std::optional<TypePackId> lookupPackAnnotation(AstTypePack* annotation) const;
     TypeId lookupExpectedType(AstExpr* expr) const;
     TypePackId lookupExpectedPack(AstExpr* expr, TypeArena& arena) const;
     TypePackId reconstructPack(AstArray<AstExpr*> exprs, TypeArena& arena);
-    Scope* findInnermostScope(Location location) const;
+    // Clip with LuauDontUseInnermostScope
+    Scope* findInnermostScope_DEPRECATED(Location location) const;
     void visit(AstStat* stat);
     void visit(AstStatIf* ifStatement);
     void visit(AstStatWhile* whileStatement);
@@ -153,8 +158,12 @@ private:
     void visit(AstStatDeclareFunction* stat);
     void visit(AstStatDeclareGlobal* stat);
     void visit(AstStatDeclareExternType* stat);
+    void checkExtendsClause(AstStatClass* stat);
     void visit(AstStatClass* stat);
     void visitConstructor(AstStatClass* stat, const AstClassMethod* method);
+    void checkMemberOverrides(AstStatClass* stat);
+    void checkPropertyOverride(AstStatClass* stat, const AstClassProperty* property, const ExternType* superInstanceEtv);
+    void checkMethodOverride(AstStatClass* stat, const AstClassMethod* method, const ExternType* superInstanceEtv);
     void visit(AstStatError* stat);
     void visit(AstExpr* expr, ValueContext context);
     void visit(AstExprGroup* expr, ValueContext context);
